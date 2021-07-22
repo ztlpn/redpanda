@@ -64,7 +64,6 @@ class SchemaRegistryTest(RedpandaTest):
     """
     Test schema registry against a redpanda cluster.
     """
-
     def __init__(self, context):
         super(SchemaRegistryTest, self).__init__(
             context,
@@ -80,7 +79,7 @@ class SchemaRegistryTest(RedpandaTest):
         requests_log.setLevel(logging.getLogger().level)
         requests_log.propagate = True
 
-    def _request(self, verb, path, **kwargs):
+    def _request(self, verb, path, hostname=None, **kwargs):
         """
 
         :param verb: String, as for first arg to requests.request
@@ -88,13 +87,15 @@ class SchemaRegistryTest(RedpandaTest):
         :param timeout: Optional requests timeout in seconds
         :return:
         """
-        # Pick hostname once: we will retry the same place we got an error,
-        # to avoid silently skipping hosts that are persistently broken
-        nodes = [n for n in self.redpanda.nodes]
-        random.shuffle(nodes)
-        node = nodes[0]
 
-        hostname = node.account.hostname
+        if hostname is None:
+            # Pick hostname once: we will retry the same place we got an error,
+            # to avoid silently skipping hosts that are persistently broken
+            nodes = [n for n in self.redpanda.nodes]
+            random.shuffle(nodes)
+            node = nodes[0]
+            hostname = node.account.hostname
+
         uri = f"http://{hostname}:8081/{path}"
 
         if 'timeout' not in kwargs:
@@ -181,11 +182,13 @@ class SchemaRegistryTest(RedpandaTest):
     def _post_subjects_subject_versions(self,
                                         subject,
                                         data,
-                                        headers=HTTP_POST_HEADERS):
+                                        headers=HTTP_POST_HEADERS,
+                                        **kwargs):
         return self._request("POST",
                              f"subjects/{subject}/versions",
                              headers=headers,
-                             data=data)
+                             data=data,
+                             **kwargs)
 
     def _get_subjects_subject_versions_version(self,
                                                subject,
@@ -332,7 +335,7 @@ class SchemaRegistryTest(RedpandaTest):
         result = result_raw.json()
         assert result["error_code"] == 40401
         assert result[
-                   "message"] == f"Subject '{topic}-key' Version 2 not found."
+            "message"] == f"Subject '{topic}-key' Version 2 not found."
 
         self.logger.debug("Get schema version 1 for subject key")
         result_raw = self._get_subjects_subject_versions_version(
@@ -596,3 +599,158 @@ class SchemaRegistryTest(RedpandaTest):
         self.logger.debug(result_raw)
         assert result_raw.status_code == requests.codes.ok
         assert result_raw.json() == [1, 2, 3]
+
+    @cluster(num_nodes=3)
+    def test_concurrent_writes(self):
+        schema_template = '{"type":"record","name":"record_%s","fields":[{"type":"string","name":"f1"}]}'
+
+        # How many errors before a worker gives up?
+        max_errs = 1
+
+        # Warm up the servers (schema_registry doesn't create topic etc before first access)
+        for node in self.redpanda.nodes:
+            r = self._request("GET",
+                              "subjects",
+                              hostname=node.account.hostname)
+            assert r.status_code == requests.codes.ok
+
+        class WriteWorker(threading.Thread):
+            def __init__(self, name, count, test):
+                super(WriteWorker, self).__init__()
+                self.name = name
+                self.count = count
+                self.test = test
+                self.logger = test.logger
+                self.schema_counter = 1
+                self.results = {}
+
+                self.errors = []
+
+            def create(self):
+                for i in range(0, self.count):
+                    subject = f"subject_{self.name}_{i}"
+                    version_id = 1
+                    schema_def = schema_template % f"{self.name}_{i}"
+
+                    self.logger.debug(
+                        f"Worker {self.name} writing subject {subject}")
+                    try:
+                        resp = self.test._post_subjects_subject_versions(
+                            subject=subject,
+                            data=json.dumps({"schema": schema_def}),
+                            timeout=20)
+                    except requests.exceptions.RequestException as e:
+                        self._push_err(
+                            f"{subject}/{version_id} POST exception: {e}")
+                    else:
+                        self._check_eq(subject, version_id, "post_ret",
+                                       resp.status_code, 200)
+                        if resp.status_code == 200:
+                            schema_id = resp.json()["id"]
+                            self.results[(subject, version_id)] = (schema_def,
+                                                                   schema_id)
+
+            def _push_err(self, err):
+                self.logger.error(f"push_err[{self.name}]: {err}")
+                self.errors.append(err)
+                if len(self.errors) > max_errs:
+                    # On e.g. timeouts, test takes too long if we wait for every request to time out
+                    raise RuntimeError("Too many errors on worker {self.name}")
+
+            def _check_eq(self, subject, version, check_name, a, b):
+                if a != b:
+                    self._push_err(
+                        f"{subject}/{version} failed {check_name} {a}!={b}")
+
+            def verify(self):
+                for (subject, version), (schema_def,
+                                         schema_id) in self.results.items():
+                    try:
+                        r = self.test._get_subjects_subject_versions_version(
+                            subject, version)
+                    except requests.exceptions.RequestException as e:
+                        self._push_err(
+                            f"{subject}/{version} GET version exception: {e}")
+                        continue
+
+                    self._check_eq(subject, version, "subject_retcode",
+                                   r.status_code, 200)
+                    self._check_eq(subject, version, "name",
+                                   r.json()['name'], subject)
+                    self._check_eq(subject, version, "version",
+                                   r.json()['version'], version)
+                    self._check_eq(subject, version, "schema",
+                                   r.json()['schema'], schema_def)
+
+                    try:
+                        r = self.test._get_schemas_ids_id(id=schema_id)
+                    except requests.exceptions.RequestException as e:
+                        self._push_err(
+                            f"{subject}/{version} GET schema exception: {e}")
+                        continue
+                    self._check_eq(subject, version, "schema_retcode",
+                                   r.status_code, 200)
+                    self._check_eq(subject, version, "schema_def",
+                                   r.json()['schema'], schema_def)
+
+                schema_ids = self.get_schema_ids()
+                if len(set(schema_ids)) != len(schema_ids):
+                    self._push_err(f"Schema IDs reused!")
+
+            def run(self):
+                try:
+                    t1 = time.time()
+                    self.create()
+                    create_dur = time.time() - t1
+                    self.logger.info(
+                        f"[{self.name}] Created {self.count} in {create_dur}s ({self.count / create_dur}/s)"
+                    )
+
+                    # Drop out early if we already found some errors during write
+                    if len(self.errors) == 0:
+                        self.verify()
+                except Exception as e:
+                    self.errors.append(f"Exception!  {e}")
+                    raise
+
+            def get_schema_ids(self):
+                result = []
+                for (subject, version), (schema_def,
+                                         schema_id) in self.results.items():
+                    result.append(schema_id)
+
+                return result
+
+        # Even this relatively small number of concurrent writers is
+        # more stress than the system will encounter in the field: schemas
+        # are likely to be written occasionally and not from many clients at once.
+        # However, it is enough to push the system to hit its collision/retry path
+        # for writes.
+        subjects_per_worker = 16
+        n_workers = 4
+        workers = []
+        for n in range(0, n_workers):
+            worker = WriteWorker(f"{n}", subjects_per_worker, self)
+            workers.append(worker)
+
+        for worker in workers:
+            worker.start()
+
+        for worker in workers:
+            worker.join()
+
+        all_schema_ids = []
+        for worker in workers:
+            if worker.errors:
+                self.logger.error(f"Worker {worker.name} errors:")
+                for e in worker.errors:
+                    self.logger.error(f"  Worker {worker.name}: {e}")
+            else:
+                self.logger.info(f"Worker {worker.name} OK")
+
+            all_schema_ids.extend(worker.get_schema_ids())
+
+        assert sum([len(worker.errors) for worker in workers]) == 0
+
+        # Check no schema IDs were duplicated
+        assert len(all_schema_ids) == len(set(all_schema_ids))

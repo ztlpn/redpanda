@@ -41,6 +41,42 @@ topic_updates_dispatcher::apply_update(model::record_batch b) {
     auto base_offset = b.base_offset();
     return deserialize(std::move(b), commands)
       .then([this, base_offset](auto cmd) {
+          _cur_batch.emplace_back(base_offset, cmd);
+          if (_cur_batch.size() < 1000) {
+              return ss::make_ready_future<std::error_code>(errc::success);
+          }
+
+          return ss::parallel_for_each(
+                   boost::irange(0, (int)ss::smp::count),
+                   [this](int shard) mutable {
+                       return _topic_table.invoke_on(
+                         shard, [this](topic_table& local_table) {
+                             return ss::do_for_each(
+                               _cur_batch.begin(),
+                               _cur_batch.end(),
+                               [&local_table](auto pair) {
+                                   return ss::visit(
+                                     std::move(pair.second),
+                                     [o = pair.first, &local_table](auto cmd) {
+                                         return local_table.apply(cmd, o).then(
+                                           [](auto) {});
+                                     });
+                               });
+                         });
+                   })
+            .then([this] {
+                _cur_batch.clear();
+                return std::error_code(errc::success);
+            });
+      });
+}
+
+/*
+ss::future<std::error_code>
+topic_updates_dispatcher::apply_update(model::record_batch b) {
+    auto base_offset = b.base_offset();
+    return deserialize(std::move(b), commands)
+      .then([this, base_offset](auto cmd) {
           return ss::visit(
             std::move(cmd),
             [this, base_offset](delete_topic_cmd del_cmd) {
@@ -299,6 +335,7 @@ topic_updates_dispatcher::apply_update(model::record_batch b) {
             });
       });
 }
+*/
 topic_updates_dispatcher::in_progress_map
 topic_updates_dispatcher::collect_in_progress(
   const model::topic_namespace& tp_ns,

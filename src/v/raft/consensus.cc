@@ -1321,11 +1321,16 @@ ss::future<> consensus::do_start() {
             })
             .then([this] {
                 auto last_applied = read_last_applied();
+                vlog(
+                  _ctxlog.info, "FFF la:{} ci:{}", last_applied, _commit_index);
+                if (this->ntp() == model::controller_ntp) {
+                    last_applied = model::offset{1000000};
+                }
                 if (last_applied > _commit_index) {
                     _commit_index = last_applied;
                     maybe_update_last_visible_index(_commit_index);
                     vlog(
-                      _ctxlog.trace,
+                      _ctxlog.info,
                       "Recovered commit_index: {}",
                       _commit_index);
                 }

@@ -161,9 +161,7 @@ ss::future<> members_manager::handle_raft0_cfg_update(
   raft::group_configuration cfg, model::offset update_offset) {
     // distribute to all cluster::members_table
     vlog(
-      clusterlog.debug,
-      "updating cluster configuration with {}",
-      cfg.brokers());
+      clusterlog.info, "updating cluster configuration with {}", cfg.brokers());
     return _allocator
       .invoke_on(
         partition_allocator::shard,
@@ -173,6 +171,7 @@ ss::future<> members_manager::handle_raft0_cfg_update(
       .then([this, cfg = std::move(cfg), update_offset]() mutable {
           auto diff = calculate_brokers_diff(_members_table.local(), cfg);
           auto added_brokers = diff.additions;
+
           return _members_table
             .invoke_on_all(
               [cfg = std::move(cfg), update_offset](members_table& m) mutable {

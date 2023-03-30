@@ -95,6 +95,20 @@ private:
     in_progress_map
     collect_in_progress(const model::topic_namespace&, const assignments_set&);
 
+    std::vector<std::pair<
+      model::offset,
+      std::variant<
+        create_topic_cmd,
+        delete_topic_cmd,
+        move_partition_replicas_cmd,
+        finish_moving_partition_replicas_cmd,
+        update_topic_properties_cmd,
+        create_partition_cmd,
+        create_non_replicable_topic_cmd,
+        cancel_moving_partition_replicas_cmd,
+        move_topic_replicas_cmd>>>
+      _cur_batch;
+
     ss::sharded<partition_allocator>& _partition_allocator;
     ss::sharded<topic_table>& _topic_table;
     ss::sharded<partition_leaders_table>& _partition_leaders_table;

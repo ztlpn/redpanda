@@ -1602,7 +1602,18 @@ void application::start_runtime_services(cluster::cluster_discovery& cd) {
           .get();
     }
     syschecks::systemd_message("Starting controller").get();
+    auto start = seastar::steady_clock_type::now();
     controller->start(cd).get0();
+    vlog(_log.info, "WAITING FOR CONTROLLER LOG REPLAY");
+    controller->get_stm()
+      .local()
+      .wait(model::offset{1000000}, model::no_timeout)
+      .get();
+    vlog(
+      _log.info,
+      "REPLAYED IN {} ms",
+      (seastar::steady_clock_type::now() - start) / 1ms);
+    // abort();
 
     // FIXME: in first patch explain why this is started after the
     // controller so the broker set will be available. Then next patch fix.

@@ -124,6 +124,8 @@ public:
         return _members_backend;
     }
 
+    ss::sharded<controller_stm>& get_stm() { return _stm; }
+
     bool is_raft0_leader() const {
         vassert(
           ss::this_shard_id() == ss::shard_id(0),

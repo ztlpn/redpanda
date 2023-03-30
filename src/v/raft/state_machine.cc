@@ -79,6 +79,14 @@ state_machine::batch_applicator::operator()(model::record_batch batch) {
 
     auto last_offset = batch.last_offset();
     return _machine->apply(std::move(batch)).then([this, last_offset] {
+        if (last_offset % 10000 == 0) {
+            vlog(
+              _machine->_log.info,
+              "{} APPLIED {}",
+              _machine->_raft->ntp(),
+              last_offset);
+        }
+
         _last_applied = last_offset;
         _machine->_waiters.notify(_last_applied);
         return ss::stop_iteration::no;

@@ -384,7 +384,7 @@ controller_backend::bootstrap_ntp(const model::ntp& ntp, deltas_t& deltas) {
 
     auto& first_delta = bootstrap_deltas.front();
     vlog(
-      clusterlog.info,
+      clusterlog.debug,
       "[{}] Bootstrapping deltas: first - {}, last - {}",
       ntp,
       first_delta,

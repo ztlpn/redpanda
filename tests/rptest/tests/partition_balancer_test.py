@@ -985,3 +985,40 @@ class PartitionBalancerTest(PartitionBalancerService):
                                          target_id=transfer_to_idx)
 
             self.wait_until_ready()
+
+    @cluster(num_nodes=6,
+             log_allow_list=CHAOS_LOG_ALLOW_LIST + STARTUP_SEQUENCE_ABORTED)
+    def test_demo(self):
+        self.start_redpanda(num_nodes=5,
+                            extra_rp_conf={
+                                "raft_learner_recovery_rate":
+                                100 * 1024 * 1024,
+                            })
+
+        id2name = dict()
+        for node in self.redpanda.nodes:
+            id2name[self.redpanda.node_id(node)] = node.account.hostname
+
+        for id, name in sorted(id2name.items()):
+            self.logger.warn(f"node id: {id} name: {name}")
+
+        self.topic = TopicSpec(name="foo", partition_count=100)
+        self.client().create_topic(self.topic)
+
+        msg_size = 102_400
+        msg_count = int((15 * 1024 * 1024 * 1024) / msg_size)
+        producer = KgoVerifierProducer(self.test_context,
+                                       self.redpanda,
+                                       self.topic,
+                                       msg_size=msg_size,
+                                       msg_count=msg_count)
+        producer.start(clean=False)
+        producer.wait_for_acks(msg_count, timeout_sec=300, backoff_sec=5)
+        producer.stop()
+
+        self.logger.warn(f"finished producing")
+
+        import time
+        for _ in range(36):
+            self.logger.warn("sleeping...")
+            time.sleep(100)

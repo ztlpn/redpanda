@@ -20,9 +20,12 @@ from ducktape.utils.util import wait_until
 from ducktape.mark import parametrize
 from rptest.clients.types import TopicSpec
 from rptest.tests.end_to_end import EndToEndTest
+from rptest.tests.redpanda_test import RedpandaTest
 from rptest.services.admin import Admin
 from rptest.services.redpanda import CHAOS_LOG_ALLOW_LIST, RESTART_LOG_ALLOW_LIST, RedpandaService
 from rptest.utils.node_operations import NodeDecommissionWaiter
+from rptest.services.failure_injector import FailureInjector
+from rptest.clients.kafka_cli_tools import KafkaCliTools
 
 
 class NodesDecommissioningTest(EndToEndTest):
@@ -689,3 +692,78 @@ class NodesDecommissioningTest(EndToEndTest):
                                  auto_assign_node_id=new_bootstrap)
 
         assert len(admin.get_brokers(node=self.redpanda.nodes[0])) == 4
+
+
+class NodeSubstitutionTest(RedpandaTest):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args,
+                         num_brokers=3,
+                         extra_rp_conf={
+                             'log_segment_size': 1_000_000,
+                             'retention_bytes': 100_000,
+                             'partition_autobalancing_concurrent_moves': 50,
+                             'raft_learner_recovery_rate': 5_000_000,
+                             'enable_leader_balancer': False,
+                             'log_segment_size_jitter_percent': 20,
+                         },
+                         **kwargs)
+
+    def setUp(self):
+        # start the nodes manually
+        pass
+
+    @cluster(num_nodes=3)
+    def test_acks1(self):
+        """
+        * Test that redpanda correctly handles the same hostname/different node
+          ids problem
+        * Reproduce the problem with partition movements being stuck with acks=1
+          after log start becomes greater than committed index
+        """
+        seed_nodes = self.redpanda.nodes
+        self.redpanda.set_seed_servers(seed_nodes)
+
+        self.redpanda.start(auto_assign_node_id=True,
+                            omit_seeds_on_idx_one=False)
+
+        victim = self.redpanda.nodes[1]
+        victim_id = self.redpanda.node_id(victim)
+
+        self.logger.info(f"victim is {victim_id}")
+
+        rpk = RpkTool(self.redpanda)
+        rpk.create_topic('test_topic', partitions=50, replicas=3)
+
+        self.logger.info(f"topic created")
+
+        sleep(5)
+
+        msg_size = 1024
+        msg_count = int(100 * 1024 * 1024 / msg_size)
+
+        kafka_tools = KafkaCliTools(self.redpanda)
+        kafka_tools.produce('test_topic',
+                            msg_count,
+                            msg_size,
+                            acks=1,
+                            batch_size=100)
+
+        self.logger.info(f"decommissioning node...")
+        finjector = FailureInjector(self.redpanda)
+        finjector._suspend(victim)
+
+        admin = Admin(self.redpanda, default_node=seed_nodes[0])
+        admin.decommission_broker(victim_id)
+
+        sleep(10)
+
+        self.logger.info(f"starting node...")
+        finjector._kill(victim)
+        self.redpanda.remove_local_data(victim)
+        self.redpanda.start_node(victim, auto_assign_node_id=True)
+
+        waiter = NodeDecommissionWaiter(self.redpanda,
+                                        victim_id,
+                                        self.logger,
+                                        progress_timeout=60)
+        waiter.wait_for_removal()

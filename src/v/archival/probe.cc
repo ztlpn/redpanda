@@ -44,7 +44,7 @@ void ntp_level_probe::setup_ntp_metrics(const model::ntp& ntp) {
       partition_label(ntp.tp.partition()),
     };
     auto aggregate_labels = config::shard_local_cfg().aggregate_metrics()
-                              ? std::vector<sm::label>{sm::shard_label}
+                              ? std::vector<sm::label>{sm::label("namespace"), sm::label("topic"), sm::label("partition")}
                               : std::vector<sm::label>{};
 
     _metrics.add_group(

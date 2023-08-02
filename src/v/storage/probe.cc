@@ -75,7 +75,7 @@ void probe::setup_metrics(const model::ntp& ntp) {
     };
     auto aggregate_labels
       = config::shard_local_cfg().aggregate_metrics()
-          ? std::vector<sm::label>{sm::shard_label, partition_label}
+          ? std::vector<sm::label>{sm::label("namespace"), sm::label("topic"), sm::label("partition")}
           : std::vector<sm::label>{};
 
     _metrics.add_group(
@@ -172,7 +172,7 @@ void probe::setup_metrics(const model::ntp& ntp) {
          [this] { return _compaction_ratio; },
          sm::description("Average segment compaction ratio"),
          labels)
-         .aggregate({sm::shard_label})});
+         .aggregate({aggregate_labels})});
 }
 
 void probe::add_initial_segment(const segment& s) {
@@ -192,7 +192,7 @@ void readers_cache_probe::setup_metrics(const model::ntp& ntp) {
     auto partition_label = sm::label("partition");
     auto aggregate_labels
       = config::shard_local_cfg().aggregate_metrics()
-          ? std::vector<sm::label>{sm::shard_label, partition_label}
+          ? std::vector<sm::label>{ns_label, topic_label, partition_label}
           : std::vector<sm::label>{};
 
     const std::vector<sm::label_instance> labels = {

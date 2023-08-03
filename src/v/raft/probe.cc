@@ -179,6 +179,13 @@ void probe::setup_metrics(const model::ntp& ntp) {
          [this] { return _full_heartbeat_requests; },
          sm::description("Number of full heartbeats sent by the leader"),
          labels)
+         .aggregate(aggregate_labels),
+       sm::make_gauge(
+         "append_entries_pending",
+         [this] { return _append_entries_pending; },
+         sm::description(
+           "Number of append_entries requests that are currently processed"),
+         labels)
          .aggregate(aggregate_labels)});
 }
 

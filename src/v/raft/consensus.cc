@@ -1779,7 +1779,10 @@ ss::future<vote_reply> consensus::do_vote(vote_request r) {
 ss::future<append_entries_reply>
 consensus::append_entries(append_entries_request&& r) {
     return with_gate(_bg, [this, r = std::move(r)]() mutable {
-        return _append_requests_buffer.enqueue(std::move(r));
+        _probe->append_entries_start();
+        return _append_requests_buffer.enqueue(std::move(r)).finally([this] {
+            _probe->append_entries_end();
+        });
     });
 }
 

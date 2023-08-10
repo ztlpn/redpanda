@@ -48,9 +48,12 @@ void replicated_partition_probe::setup_internal_metrics(const model::ntp& ntp) {
     auto ns_label = sm::label("namespace");
     auto topic_label = sm::label("topic");
     auto partition_label = sm::label("partition");
-    auto aggregate_labels = config::shard_local_cfg().aggregate_metrics()
-                              ? std::vector<sm::label>{sm::label("namespace"), sm::label("topic"), sm::label("partition")}
-                              : std::vector<sm::label>{};
+    auto aggregate_labels
+      = config::shard_local_cfg().aggregate_metrics() ? std::vector<
+          sm::
+            label>{sm::label("namespace"), sm::label("topic"), sm::label("partition")}
+                                                      : std::vector<
+                                                        sm::label>{};
 
     const std::vector<sm::label_instance> labels = {
       ns_label(ntp.ns()),
@@ -108,6 +111,12 @@ void replicated_partition_probe::setup_internal_metrics(const model::ntp& ntp) {
                 model::node_id(-1));
           },
           sm::description("Id of current partition leader"),
+          labels)
+          .aggregate(aggregate_labels),
+        sm::make_gauge(
+          "leaderless",
+          [this] { return !_partition.raft()->get_leader_id().has_value(); },
+          sm::description("1 if partition has no leader"),
           labels)
           .aggregate(aggregate_labels),
         sm::make_gauge(

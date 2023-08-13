@@ -774,6 +774,18 @@ configuration::configuration()
       "one follower",
       {.visibility = visibility::tunable},
       16)
+  , kafka_metadata_delay_ms(
+      *this,
+      "kafka_metadata_delay_ms",
+      "sleep time before serving the metadata request",
+      {.visibility = visibility::tunable},
+      0)
+  , kafka_metadata_rate_limit(
+      *this,
+      "kafka_metadata_rate_limit",
+      "whole-node rate limit on metadata requests",
+      {.visibility = visibility::tunable},
+      10000)
   , reclaim_min_size(
       *this,
       "reclaim_min_size",

@@ -334,6 +334,41 @@ static ss::future<std::vector<metadata_response::topic>> get_topic_metadata(
       });
 }
 
+static std::vector<metadata_response::topic>
+get_timedout_response(request_context& ctx, metadata_request& request) {
+    std::vector<metadata_response::topic> res;
+
+    // request can be served from whatever happens to be in the cache
+    if (request.list_all_topics) {
+        auto& topics_md = ctx.metadata_cache().all_topics_metadata();
+        // reserve vector capacity to full size as there are only few topics
+        // outside of kafka namespace
+        res.reserve(topics_md.size());
+        for (const auto& [tp_ns, md] : topics_md) {
+            // only serve topics from the kafka namespace
+            if (tp_ns.ns != model::kafka_namespace) {
+                continue;
+            }
+
+            metadata_response::topic t;
+            t.name = tp_ns.tp;
+            t.error_code = error_code::request_timed_out;
+            res.push_back(std::move(t));
+        }
+
+        return res;
+    }
+
+    for (auto& topic : *request.data.topics) {
+        metadata_response::topic t;
+        t.name = topic.name;
+        t.error_code = error_code::request_timed_out;
+        res.push_back(std::move(t));
+    }
+
+    return res;
+}
+
 /**
  * During configuration changes, it may not be possible to identify
  * the correct listener on a broker based on our local listener's
@@ -468,9 +503,232 @@ static ss::future<metadata_response> fill_info_about_brokers_and_controller_id(
     co_return reply;
 }
 
+template<typename clock_type = ss::lowres_clock>
+class throttler {
+    static constexpr std::chrono::milliseconds refresh_error{5};
+    static constexpr std::chrono::milliseconds refresh_interval{50};
+
+public:
+    throttler(size_t rate, ss::sstring name)
+      : _rate(rate)
+      , _capacity(rate)
+      , _sem{rate, std::move(name)}
+      , _last_refresh(clock_type::now())
+      , _refresh_timer([this] { handle_refresh(); }) {}
+
+    throttler(size_t rate, ss::sstring name, size_t capacity)
+      : _rate(rate)
+      , _capacity(capacity)
+      , _sem{rate, std::move(name)}
+      , _last_refresh(clock_type::now())
+      , _refresh_timer([this] { handle_refresh(); }) {}
+
+    std::chrono::milliseconds projected_wait_time() {
+        _reqs_count += 1;
+        size_t waiters = _sem.waiters();
+        auto projected_wait = waiters * std::chrono::milliseconds(1000) / _rate;
+        if (ss::this_shard_id() == ss::shard_id(0)) {
+            auto now = clock_type::now();
+            if (now > _last_log + 250ms) {
+                _last_waiters_count = waiters;
+                _last_log = now;
+                vlog(
+                  klog.info,
+                  "WAITERS {}, REQS rate {}/s, projected wait time {} ms",
+                  waiters,
+                  _reqs_count * (std::chrono::milliseconds(1000) / 250ms),
+                  projected_wait / 1ms);
+                _reqs_count = 0;
+            }
+        }
+
+        return projected_wait;
+    }
+
+    ss::future<> throttle(size_t size, ss::abort_source& as) {
+        _refresh_timer.cancel();
+        refresh();
+
+        /*
+         * when try_wait succeeds it implies that there are no waiters so there
+         * is no risk in returning without arming the refresh timer.
+         */
+        if (_sem.try_wait(size)) {
+            return ss::now();
+        }
+
+        auto elapsed = clock_type::now() - _last_refresh;
+        if (elapsed >= refresh_interval) {
+            _refresh_timer.arm(refresh_interval);
+        } else {
+            _refresh_timer.arm(refresh_interval - elapsed);
+        }
+
+        return _sem.wait(as, size);
+    }
+
+    // return projected wait time
+    std::chrono::milliseconds take(size_t size) {
+        _refresh_timer.cancel();
+        refresh();
+
+        _sem.consume(size);
+
+        size_t waiters
+          = (_sem.available_units() < 0 ? -_sem.available_units() : 0);
+
+        if (ss::this_shard_id() == ss::shard_id(0)) {
+            auto now = clock_type::now();
+            if (now > _last_log + 1s || waiters > _last_waiters_count) {
+                _last_waiters_count = waiters;
+                _last_log = now;
+                vlog(klog.info, "WAITERS {}", waiters);
+            }
+        }
+
+        return waiters * std::chrono::milliseconds(1000) / _rate;
+    }
+
+    bool try_throttle(size_t size) {
+        _refresh_timer.cancel();
+        refresh();
+
+        /*
+         * when try_wait succeeds it implies that there are no waiters so there
+         * is no risk in returning without arming the refresh timer.
+         */
+        return _sem.try_wait(size);
+    }
+    void shutdown() {
+        _refresh_timer.cancel();
+        _sem.broken();
+    }
+
+    void update_capacity(size_t new_capacity) {
+        if (_capacity == new_capacity) {
+            return;
+        }
+
+        if (new_capacity < _capacity && _sem.current() > new_capacity) {
+            _sem.consume(_sem.current() - new_capacity);
+        }
+
+        _capacity = new_capacity;
+    }
+
+    void update_rate(size_t new_rate) {
+        if (_rate == new_rate) {
+            return;
+        }
+
+        if (_rate > new_rate) {
+            if (_sem.current() <= _rate) {
+                _sem.consume(_rate - new_rate);
+            } else {
+                /*
+                 * if current > rate it means that we have accumulated tokens
+                 * we should change current to new_rate to start accumulation
+                 * from begining
+                 */
+                _sem.consume(_sem.current() - new_rate);
+            }
+        } else {
+            if (_sem.current() <= _rate) {
+                _sem.signal(new_rate - _rate);
+            } else {
+                // Same as previous comment
+                _sem.consume(_sem.current() - new_rate);
+            }
+        }
+
+        if (_rate == _capacity) {
+            _capacity = new_rate;
+        }
+
+        _rate = new_rate;
+    }
+
+    size_t available() {
+        refresh();
+        return _sem.current();
+    }
+
+private:
+    void refresh() {
+        auto now = clock_type::now();
+        auto elapsed = now - _last_refresh;
+        if (elapsed < refresh_interval) {
+            return;
+        }
+        _last_refresh = now;
+
+        /*
+         * subtract out half the lowres clock granularity as an error adjustment
+         * that will be pessimistic and error on the side of lower throughput.
+         */
+        auto refresh = _rate * (elapsed - refresh_error)
+                       / std::chrono::milliseconds(1000);
+
+        _sem.signal(refresh);
+
+        /*
+         * throttling is based on an estimate. if rate is low and a waiter
+         * underestimated we may need to allow the available tokens to exceed
+         * the rate to let a waiter through.
+         */
+        if (_sem.current() > _capacity && !_sem.waiters()) {
+            _sem.consume(_sem.current() - _capacity);
+        }
+    }
+
+    void handle_refresh() {
+        refresh();
+        /*
+         * if a waiter exists continue refreshing since it is not guaranteed
+         * that throttle will be invoked (e.g. exactly one recovering group).
+         */
+        if (_sem.waiters()) {
+            _refresh_timer.arm(refresh_interval);
+        }
+    }
+
+    size_t _rate;
+    size_t _capacity;
+    ssx::semaphore _sem;
+    typename clock_type::time_point _last_refresh;
+    typename clock_type::time_point _last_log;
+    size_t _last_waiters_count = 0;
+    size_t _reqs_count = 0;
+    ss::timer<> _refresh_timer;
+};
+
+ss::future<std::optional<std::chrono::milliseconds>> throttle() {
+    static thread_local throttler tb(
+      config::shard_local_cfg().kafka_metadata_rate_limit(), "metadata");
+
+    // co_return tb.take(1);
+
+    if (tb.projected_wait_time() > 1ms * 500) {
+        co_return std::nullopt;
+    }
+
+    ss::abort_source as;
+    auto start = ss::lowres_clock::now();
+    co_await tb.throttle(1, as);
+    co_return std::chrono::duration_cast<std::chrono::milliseconds>(
+      ss::lowres_clock::now() - start);
+}
+
 template<>
 ss::future<response_ptr> metadata_handler::handle(
   request_context ctx, [[maybe_unused]] ss::smp_service_group g) {
+    // size_t delay = config::shard_local_cfg().kafka_metadata_delay_ms();
+    // auto sleep_time = 1ms * random_generators::get_int(delay, delay * 2);
+
+    // if (delay > 0) {
+    //     co_await ss::sleep(sleep_time);
+    // }
+
     auto isolated_or_decommissioned = node_isolated_or_decommissioned(ctx);
 
     auto reply = co_await fill_info_about_brokers_and_controller_id(
@@ -489,6 +747,17 @@ ss::future<response_ptr> metadata_handler::handle(
     metadata_request request;
     request.decode(ctx.reader(), ctx.header().version);
     log_request(ctx.header(), request);
+
+    auto throttle_delay = co_await ss::smp::submit_to(
+      0, [] { return throttle(); });
+    if (throttle_delay) {
+        reply.data.throttle_time_ms = *throttle_delay;
+    } else {
+        // there is a potentially long wait, just timeout immediately.
+        reply.data.topics = get_timedout_response(ctx, request);
+        reply.data.throttle_time_ms = 1ms * 500;
+        co_return co_await ctx.respond(std::move(reply));
+    }
 
     reply.data.topics = co_await get_topic_metadata(
       ctx, request, isolated_or_decommissioned);

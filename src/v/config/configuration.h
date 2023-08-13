@@ -174,6 +174,8 @@ struct configuration final : public config_store {
     property<bool> raft_recovery_throttle_disable_dynamic_mode;
     property<std::optional<uint32_t>> raft_smp_max_non_local_requests;
     property<uint32_t> raft_max_concurrent_append_requests_per_follower;
+    property<size_t> kafka_metadata_delay_ms;
+    property<size_t> kafka_metadata_rate_limit;
 
     property<size_t> reclaim_min_size;
     property<size_t> reclaim_max_size;

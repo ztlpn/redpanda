@@ -30,6 +30,20 @@ append_entries_buffer::enqueue(append_entries_request&& r) {
 
     return _flushed.wait([this] { return _requests.size() < _max_buffered; })
       .then([this, r = std::move(r), guard = std::move(guard)]() mutable {
+          static thread_local std::optional<hdr_hist> hist = hdr_hist{};
+          static thread_local clock_type::time_point last_log;
+          hist->record(r.us_since_start());
+          auto now = clock_type::now();
+          if (now > last_log + 500ms) {
+              vlog(
+                raftlog.warn,
+                "APPEND_ENTRIES enqueued_to_buffer 99th latency: {} s",
+                double(hist->get_value_at(99.0)) / 1'000'000);
+
+              hist = hdr_hist{};
+              last_log = now;
+          }
+
           ss::promise<append_entries_reply> p;
           auto f = p.get_future();
           _requests.push_back(std::move(r));
@@ -78,6 +92,17 @@ ss::future<> append_entries_buffer::flush() {
     auto requests = std::exchange(_requests, {});
     auto response_promises = std::exchange(_responses, {});
 
+    static thread_local clock_type::time_point last_log;
+    auto now = clock_type::now();
+    if (now > last_log + 500ms) {
+        vlog(
+          _consensus._ctxlog.warn,
+          "APPEND_ENTRIES BATCH requests len: {}, oplock waiters: {}",
+          _requests.size(),
+          _consensus._op_lock.waiters());
+        last_log = now;
+    }
+
     return _consensus._op_lock.get_units().then(
       [this,
        requests = std::move(requests),
@@ -93,10 +118,23 @@ ss::future<> append_entries_buffer::do_flush(
     bool needs_flush = false;
     reply_list_t replies;
     auto f = ss::now();
+
+    static thread_local clock_type::time_point last_log;
+    static thread_local size_t num_batches = 0;
+    static thread_local size_t num_requests = 0;
+    static thread_local size_t num_log_flushes = 0;
+
+    num_batches += 1;
+    num_requests += requests.size();
+
+    ss::chunked_fifo<hdr_hist::clock_type::time_point, 32> starts;
+
     {
         ssx::semaphore_units op_lock_units = std::move(u);
         replies.reserve(requests.size());
+        starts.reserve(requests.size());
         for (auto& req : requests) {
+            starts.push_back(req.start.value());
             if (req.is_flush_required()) {
                 needs_flush = true;
             }
@@ -110,12 +148,47 @@ ss::future<> append_entries_buffer::do_flush(
             }
         }
         if (needs_flush) {
+            num_log_flushes += 1;
             f = _consensus.flush_log();
         }
     }
 
+    auto now = clock_type::now();
+    if (now > last_log + 500ms) {
+        vlog(
+          raftlog.warn,
+          "APPEND_ENTRIES BATCH batches rate: {}/s, mean batch len: {}, "
+          "log flushes rate: {}",
+          num_batches * 1000ms / (now - last_log),
+          double(num_requests) / num_batches,
+          num_log_flushes * 1000ms / (now - last_log));
+        last_log = now;
+        num_batches = 0;
+        num_requests = 0;
+        num_log_flushes = 0;
+    }
+
     // units were released before flushing log
     co_await std::move(f);
+
+    {
+        static thread_local std::optional<hdr_hist> hist = hdr_hist{};
+        static thread_local clock_type::time_point last_log;
+        auto hist_now = hdr_hist::clock_type::now();
+        for (auto s : starts) {
+            hist->record((hist_now - s) / std::chrono::microseconds(1));
+        }
+        auto now = clock_type::now();
+        if (now > last_log + 500ms) {
+            vlog(
+              raftlog.warn,
+              "APPEND_ENTRIES buffer_log_flushed 99th latency: {} s",
+              double(hist->get_value_at(99.0)) / 1'000'000);
+
+            hist = hdr_hist{};
+            last_log = now;
+        }
+    }
 
     propagate_results(std::move(replies), std::move(response_promises));
     _flushed.broadcast();

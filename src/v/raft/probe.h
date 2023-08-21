@@ -61,6 +61,7 @@ public:
 
     void append_entries_start() { ++_append_entries_pending; };
     void append_entries_end() { --_append_entries_pending; };
+    uint64_t append_entries_pending() const { return _append_entries_pending; }
 
 private:
     uint64_t _vote_requests = 0;

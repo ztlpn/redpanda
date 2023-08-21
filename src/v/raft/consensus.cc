@@ -32,10 +32,12 @@
 #include "raft/types.h"
 #include "raft/vote_stm.h"
 #include "reflection/adl.h"
+#include "resource_mgmt/cpu_profiler.h"
 #include "rpc/types.h"
 #include "ssx/future-util.h"
 #include "storage/api.h"
 #include "storage/kvstore.h"
+#include "utils/hdr_hist.h"
 #include "vlog.h"
 
 #include <seastar/core/condition-variable.hh>
@@ -43,6 +45,7 @@
 #include <seastar/core/fstream.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/gate.hh>
+#include <seastar/core/reactor.hh>
 #include <seastar/core/semaphore.hh>
 #include <seastar/util/defer.hh>
 
@@ -160,9 +163,12 @@ void consensus::setup_metrics() {
 
     _probe->setup_metrics(_log->config().ntp());
     auto labels = probe::create_metric_labels(_log->config().ntp());
-    auto aggregate_labels = config::shard_local_cfg().aggregate_metrics()
-                              ? std::vector<sm::label>{sm::label("namespace"), sm::label("topic"), sm::label("partition")}
-                              : std::vector<sm::label>{};
+    auto aggregate_labels
+      = config::shard_local_cfg().aggregate_metrics() ? std::vector<
+          sm::
+            label>{sm::label("namespace"), sm::label("topic"), sm::label("partition")}
+                                                      : std::vector<
+                                                        sm::label>{};
 
     _metrics.add_group(
       prometheus_sanitize::metrics_name("raft"),
@@ -202,6 +208,14 @@ void consensus::do_step_down(std::string_view ctx) {
           ctx,
           _term,
           _log->offsets().dirty_offset);
+        if (ctx != "leadership_transfer") {
+            vlog(
+              _ctxlog.warn,
+              "[{}] Stepping down as leader in term {}, dirty offset {}",
+              ctx,
+              _term,
+              _log->offsets().dirty_offset);
+        }
     }
     _fstats.reset();
     _vstate = vote_state::follower;
@@ -223,6 +237,21 @@ void consensus::maybe_step_down() {
                 }
 
                 if (majority_hbeat + _jit.base_duration() < clock_type::now()) {
+                    // for (const auto& [vnode, md] : _fstats) {
+                    //     vlog(
+                    //       _ctxlog.info,
+                    //       "FOLLOWER {}: hf:{} lrrt:{}ms lsaert:{}ms fs:{}",
+                    //       vnode,
+                    //       md.heartbeats_failed,
+                    //       (clock_type::now() -
+                    //       md.last_received_reply_timestamp)
+                    //         / 1ms,
+                    //       (clock_type::now()
+                    //        - md.last_sent_append_entries_req_timestamp)
+                    //         / 1ms,
+                    //       md);
+                    // }
+
                     do_step_down("heartbeats_majority");
                     if (_leader_id) {
                         _leader_id = std::nullopt;
@@ -1780,9 +1809,59 @@ ss::future<append_entries_reply>
 consensus::append_entries(append_entries_request&& r) {
     return with_gate(_bg, [this, r = std::move(r)]() mutable {
         _probe->append_entries_start();
-        return _append_requests_buffer.enqueue(std::move(r)).finally([this] {
-            _probe->append_entries_end();
-        });
+
+        auto start = hdr_hist::clock_type::now();
+        r.start = start;
+
+        return _append_requests_buffer.enqueue(std::move(r))
+          .finally([this, start] {
+              _probe->append_entries_end();
+
+              static thread_local std::optional<hdr_hist> hist = hdr_hist{};
+              static thread_local size_t last_count = 0;
+              static thread_local clock_type::time_point last_log;
+              // static thread_local size_t prev_pending = 0;
+
+              hist->record((hdr_hist::clock_type::now() - start) / 1us);
+              last_count += 1;
+
+              auto now = clock_type::now();
+              if (now > last_log + 500ms) {
+                  size_t cur_pending = _probe->append_entries_pending();
+
+                  vlog(
+                    raftlog.warn,
+                    "APPEND_ENTRIES done_full pending {}, rate: {}/s, 99th "
+                    "latency: {} s",
+                    cur_pending,
+                    last_count * 1000ms / (now - last_log),
+                    double(hist->get_value_at(99.0)) / 1'000'000);
+
+                  // static thread_local std::optional<clock_type::time_point>
+                  //   prof_enabled_at;
+                  // static thread_local bool prof_disabled = false;
+
+                  // if (
+                  //   cur_pending > 1000 && prev_pending > 1000
+                  //   && !prof_enabled_at) {
+                  //     vlog(raftlog.warn, "PROF ENABLE");
+                  //     resources::cpu_profiler::get_local().enable_manually(
+                  //       true);
+                  //     prof_enabled_at = now;
+                  // } else if (
+                  //   cur_pending < 500 && prof_enabled_at && !prof_disabled) {
+                  //     vlog(raftlog.warn, "PROF DISABLE");
+                  //     resources::cpu_profiler::get_local().enable_manually(
+                  //       false);
+                  //     prof_disabled = true;
+                  // }
+
+                  hist = hdr_hist{};
+                  last_count = 0;
+                  last_log = now;
+                  // prev_pending = _probe->append_entries_pending();
+              }
+          });
     });
 }
 
@@ -1799,6 +1878,24 @@ consensus::do_append_entries(append_entries_request&& r) {
     reply.last_flushed_log_index = _flushed_offset;
     reply.result = reply_result::failure;
     _probe->append_request();
+
+    {
+        static thread_local std::optional<hdr_hist> hist = hdr_hist{};
+        static thread_local clock_type::time_point last_log;
+
+        hist->record(r.us_since_start());
+
+        auto now = clock_type::now();
+        if (now > last_log + 500ms) {
+            vlog(
+              raftlog.warn,
+              "APPEND_ENTRIES start_dae 99th latency: {} s",
+              double(hist->get_value_at(99.0)) / 1'000'000);
+
+            hist = hdr_hist{};
+            last_log = now;
+        }
+    }
 
     if (unlikely(is_request_target_node_invalid("append_entries", r))) {
         return ss::make_ready_future<append_entries_reply>(reply);
@@ -1897,7 +1994,28 @@ consensus::do_append_entries(append_entries_request&& r) {
         }
         auto f = ss::now();
         if (r.is_flush_required() && lstats.dirty_offset > _flushed_offset) {
-            f = flush_log();
+            f = flush_log().then([start = r.start.value()] {
+                static thread_local std::optional<hdr_hist> hist = hdr_hist{};
+                static thread_local clock_type::time_point last_log;
+                static thread_local size_t samples = 0;
+
+                auto hist_now = hdr_hist::clock_type::now();
+                hist->record((hist_now - start) / std::chrono::microseconds(1));
+                samples += 1;
+
+                auto now = clock_type::now();
+                if (now > last_log + 500ms) {
+                    vlog(
+                      raftlog.warn,
+                      "APPEND_ENTRIES flush_hb 99th latency: {} s, samples: {}",
+                      double(hist->get_value_at(99.0)) / 1'000'000,
+                      samples);
+
+                    hist = hdr_hist{};
+                    last_log = now;
+                    samples = 0;
+                }
+            });
         }
         auto last_visible = std::min(
           lstats.dirty_offset, request_metadata.last_visible_index);
@@ -1951,7 +2069,7 @@ consensus::do_append_entries(append_entries_request&& r) {
               return _log->truncate(storage::truncate_config(
                 truncate_at, _scheduling.default_iopc));
           })
-          .then([this, truncate_at] {
+          .then([this, truncate_at, start = r.start.value()] {
               _last_quorum_replicated_index = std::min(
                 model::prev_offset(truncate_at), _last_quorum_replicated_index);
               // update flushed offset since truncation may happen to already
@@ -1959,10 +2077,36 @@ consensus::do_append_entries(append_entries_request&& r) {
               _flushed_offset = std::min(
                 model::prev_offset(truncate_at), _flushed_offset);
 
-              return _configuration_manager.truncate(truncate_at).then([this] {
-                  _probe->configuration_update();
-                  update_follower_stats(_configuration_manager.get_latest());
-              });
+              return _configuration_manager.truncate(truncate_at)
+                .then([this, start] {
+                    _probe->configuration_update();
+                    update_follower_stats(_configuration_manager.get_latest());
+                    {
+                        static thread_local std::optional<hdr_hist> hist
+                          = hdr_hist{};
+                        static thread_local clock_type::time_point last_log;
+                        static thread_local size_t samples = 0;
+
+                        auto hist_now = hdr_hist::clock_type::now();
+                        hist->record(
+                          (hist_now - start) / std::chrono::microseconds(1));
+                        samples += 1;
+
+                        auto now = clock_type::now();
+                        if (now > last_log + 500ms) {
+                            vlog(
+                              raftlog.warn,
+                              "APPEND_ENTRIES truncate 99th latency: {} s, "
+                              "samples: {}",
+                              double(hist->get_value_at(99.0)) / 1'000'000,
+                              samples);
+
+                            hist = hdr_hist{};
+                            last_log = now;
+                            samples = 0;
+                        }
+                    }
+                });
           })
           .then([this, r = std::move(r), truncate_at]() mutable {
               auto lstats = _log->offsets();
@@ -1992,8 +2136,34 @@ consensus::do_append_entries(append_entries_request&& r) {
     using offsets_ret = storage::append_result;
     return disk_append(
              std::move(r).release_batches(), update_last_quorum_index::no)
-      .then([this, m = request_metadata, target = reply.target_node_id](
-              offsets_ret ofs) {
+      .then([this,
+             m = request_metadata,
+             target = reply.target_node_id,
+             start = r.start.value()](offsets_ret ofs) {
+          {
+              static thread_local std::optional<hdr_hist> hist = hdr_hist{};
+              static thread_local clock_type::time_point last_log;
+              static thread_local size_t samples = 0;
+
+              auto hist_now = hdr_hist::clock_type::now();
+              hist->record((hist_now - start) / std::chrono::microseconds(1));
+              samples += 1;
+
+              auto now = clock_type::now();
+              if (now > last_log + 500ms) {
+                  vlog(
+                    raftlog.warn,
+                    "APPEND_ENTRIES disk_append 99th latency: {} s, "
+                    "samples: {}",
+                    double(hist->get_value_at(99.0)) / 1'000'000,
+                    samples);
+
+                  hist = hdr_hist{};
+                  last_log = now;
+                  samples = 0;
+              }
+          }
+
           auto f = ss::make_ready_future<>();
           auto last_visible = std::min(ofs.last_offset, m.last_visible_index);
           maybe_update_last_visible_index(last_visible);

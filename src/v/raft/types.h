@@ -263,6 +263,15 @@ struct append_entries_request
     static ss::future<append_entries_request>
     serde_async_direct_read(iobuf_parser&, size_t bytes_left_limit);
 
+    // not serialized
+    std::optional<std::chrono::high_resolution_clock::time_point> start;
+
+    uint64_t us_since_start() const {
+        vassert(start, "start not recorded");
+        return (std::chrono::high_resolution_clock::now() - *start)
+               / std::chrono::microseconds(1);
+    }
+
 private:
     vnode _source_node;
     vnode _target_node_id;

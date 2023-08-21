@@ -68,6 +68,31 @@ ss::future<> rpc_server::apply(ss::lw_shared_ptr<net::connection> conn) {
                     conn->shutdown_input();
                     return ss::now();
                 }
+
+                struct peer_info {
+                    size_t count = 0;
+                    clock_type::time_point last_log;
+                };
+
+                static thread_local absl::
+                  node_hash_map<ss::net::inet_address, peer_info>
+                    peer2info;
+                auto& peer_info = peer2info[conn->addr.addr()];
+
+                peer_info.count += 1;
+
+                auto now = clock_type::now();
+                if (now > peer_info.last_log + 500ms) {
+                    vlog(
+                      rpclog.info,
+                      "SERVER peer {}: dequeue corr {} (peer rate {}/s)",
+                      conn->addr,
+                      h->correlation_id,
+                      peer_info.count * 1000ms / (now - peer_info.last_log));
+                    peer_info.last_log = now;
+                    peer_info.count = 0;
+                }
+
                 return dispatch_method_once(h.value(), conn);
             });
       });
@@ -78,6 +103,24 @@ rpc_server::send_reply(ss::lw_shared_ptr<server_context_impl> ctx, netbuf buf) {
     buf.set_min_compression_bytes(reply_min_compression_bytes);
     buf.set_compression(rpc::compression_type::zstd);
     buf.set_correlation_id(ctx->get_header().correlation_id);
+
+    struct peer_info {
+        clock_type::time_point last_log;
+    };
+
+    static thread_local absl::node_hash_map<ss::net::inet_address, peer_info>
+      peer2info;
+    auto& peer_info = peer2info[ctx->conn->addr.addr()];
+
+    auto now = clock_type::now();
+    if (now > peer_info.last_log + 500ms) {
+        vlog(
+          rpclog.info,
+          "SERVER peer {}: enqueue corr {}",
+          ctx->conn->addr,
+          ctx->get_header().correlation_id);
+        peer_info.last_log = now;
+    }
 
     auto view = co_await std::move(buf).as_scattered();
     if (conn_gate().is_closed()) {

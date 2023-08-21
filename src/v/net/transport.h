@@ -78,6 +78,10 @@ public:
 
     const unresolved_address& server_address() const { return _server_addr; }
 
+    std::optional<ss::socket_address> local_address() const {
+        return _fd->local_address();
+    }
+
 protected:
     virtual void fail_outstanding_futures() {}
 

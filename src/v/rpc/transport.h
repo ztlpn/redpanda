@@ -232,6 +232,10 @@ private:
     void set_version(transport_version v) { _version = v; }
 
     friend std::ostream& operator<<(std::ostream&, const transport&);
+
+    clock_type::time_point _last_send_log;
+    clock_type::time_point _last_recv_log;
+    size_t _req_count = 0;
 };
 
 namespace internal {

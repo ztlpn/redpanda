@@ -257,6 +257,28 @@ transport::do_send(sequence_t seq, netbuf b, rpc::client_opts opts) {
 
                   _requests_queue.emplace(
                     seq, std::make_unique<entry>(std::move(e)));
+
+                  _req_count += 1;
+
+                  auto now = clock_type::now();
+                  if (now > _last_send_log + 500ms) {
+                      auto local_addr = local_address();
+                      uint16_t port = (local_addr ? local_addr->port() : 0);
+
+                      vlog(
+                        rpclog.info,
+                        "CLIENT peer {}: (local port {}) enqueue corr {} (peer "
+                        "rate {}/s), correlations size: {}, queue size: {}",
+                        server_address().host(),
+                        port,
+                        corr,
+                        _req_count * 1000ms / (now - _last_send_log),
+                        _correlations.size(),
+                        _requests_queue.size());
+                      _last_send_log = now;
+                      _req_count = 0;
+                  }
+
                   // By this point the request may already have timed out but
                   // we still do dispatch_send where it is handled. This is
                   // needed for two reasons:
@@ -405,6 +427,16 @@ ss::future<> transport::do_reads() {
 /// - this needs a streaming_context.
 ///
 ss::future<> transport::dispatch(header h) {
+    auto now = clock_type::now();
+    if (now > _last_recv_log + 500ms) {
+        vlog(
+          rpclog.info,
+          "CLIENT peer {}: dequeue corr {}",
+          server_address().host(),
+          h.correlation_id);
+        _last_recv_log = now;
+    }
+
     auto it = _correlations.find(h.correlation_id);
     if (it == _correlations.end()) {
         // We removed correlation already

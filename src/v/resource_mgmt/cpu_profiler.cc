@@ -35,6 +35,8 @@ cpu_profiler::cpu_profiler(
     _sample_period.watch([this] { on_sample_period_change(); });
 }
 
+static thread_local cpu_profiler* local_instance = nullptr;
+
 ss::future<> cpu_profiler::start() {
     seastar::engine().set_cpu_profiler_period(_sample_period());
     seastar::engine().set_cpu_profiler_enabled(_enabled());
@@ -45,7 +47,14 @@ ss::future<> cpu_profiler::start() {
         _query_timer.arm_periodic(ss::max_number_of_traces * _sample_period());
     }
 
+    local_instance = this;
+
     return ss::now();
+}
+
+cpu_profiler& cpu_profiler::get_local() {
+    vassert(local_instance, "profiler not initialized");
+    return *local_instance;
 }
 
 ss::future<> cpu_profiler::stop() {
@@ -135,6 +144,21 @@ void cpu_profiler::on_enabled_change() {
 
     if (_enabled()) {
         _query_timer.arm_periodic(ss::max_number_of_traces * _sample_period());
+    }
+}
+
+void cpu_profiler::enable_manually(bool enabled) {
+    if (_gate.is_closed()) {
+        return;
+    }
+
+    ss::engine().set_cpu_profiler_enabled(enabled);
+    _query_timer.cancel();
+
+    if (enabled) {
+        _query_timer.arm_periodic(ss::max_number_of_traces * _sample_period());
+    } else {
+        poll_samples();
     }
 }
 

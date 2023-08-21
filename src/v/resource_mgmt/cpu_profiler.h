@@ -67,6 +67,8 @@ public:
     ss::future<> start();
     ss::future<> stop();
 
+    void enable_manually(bool enabled);
+
     // Collects `shard_results()` for each shard in a node and returns
     // them as a vector.
     ss::future<std::vector<shard_samples>>
@@ -75,6 +77,8 @@ public:
     // Returns the samples and dropped samples from the shard this function
     // is called on.
     shard_samples shard_results() const;
+
+    static cpu_profiler& get_local();
 
 private:
     // Used to poll seastar at set intervals to capture all samples

@@ -55,14 +55,19 @@ void probe::setup_public_metrics(const model::ntp& ntp) {
          .aggregate(aggregate_labels)});
 }
 
-void probe::setup_metrics(const model::ntp& ntp) {
+void probe::setup_metrics(const model::ntp* ntp) {
     namespace sm = ss::metrics;
-    auto labels = create_metric_labels(ntp);
-    auto aggregate_labels
-      = config::shard_local_cfg().aggregate_metrics()
-          ? std::vector<sm::label>{sm::shard_label, sm::label("partition")}
-          : std::vector<sm::label>{};
-    ;
+
+    auto labels = std::vector<sm::label_instance>{};
+    auto aggregate_labels = std::vector<sm::label>{};
+
+    if (ntp) {
+        auto labels = create_metric_labels(*ntp);
+        auto aggregate_labels
+          = config::shard_local_cfg().aggregate_metrics()
+              ? std::vector<sm::label>{sm::shard_label, sm::label("partition")}
+              : std::vector<sm::label>{};
+    }
 
     _metrics.add_group(
       prometheus_sanitize::metrics_name("raft"),

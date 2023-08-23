@@ -19,7 +19,9 @@
 namespace cloud_storage {
 
 partition_probe::partition_probe(const model::ntp& ntp) {
-    if (config::shard_local_cfg().disable_metrics()) {
+    if (
+      config::shard_local_cfg().disable_metrics()
+      || config::shard_local_cfg().disable_per_partition_metrics()) {
         return;
     }
 

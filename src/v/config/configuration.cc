@@ -370,6 +370,12 @@ configuration::configuration()
       "partition labels.",
       {.needs_restart = needs_restart::yes},
       false)
+  , disable_per_partition_metrics(
+      *this,
+      "disable_per_partition_metrics",
+      "Disable registering metrics that have a per-partition granularity.",
+      base_property::metadata{},
+      false)
   , group_min_session_timeout_ms(
       *this,
       "group_min_session_timeout_ms",

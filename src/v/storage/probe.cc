@@ -60,7 +60,9 @@ void node_probe::setup_node_metrics() {
 }
 
 void probe::setup_metrics(const model::ntp& ntp) {
-    if (config::shard_local_cfg().disable_metrics()) {
+    if (
+      config::shard_local_cfg().disable_metrics()
+      || config::shard_local_cfg().disable_per_partition_metrics()) {
         return;
     }
 
@@ -183,7 +185,9 @@ void probe::delete_segment(const segment& s) {
 }
 
 void readers_cache_probe::setup_metrics(const model::ntp& ntp) {
-    if (config::shard_local_cfg().disable_metrics()) {
+    if (
+      config::shard_local_cfg().disable_metrics()
+      || config::shard_local_cfg().disable_per_partition_metrics()) {
         return;
     }
     namespace sm = ss::metrics;

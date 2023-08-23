@@ -31,7 +31,9 @@ ntp_level_probe::ntp_level_probe(
 
 void ntp_level_probe::setup_ntp_metrics(const model::ntp& ntp) {
     namespace sm = ss::metrics;
-    if (config::shard_local_cfg().disable_metrics()) {
+    if (
+      config::shard_local_cfg().disable_metrics()
+      || config::shard_local_cfg().disable_per_partition_metrics()) {
         return;
     }
 

@@ -45,7 +45,9 @@ void replicated_partition_probe::setup_metrics(const model::ntp& ntp) {
 void replicated_partition_probe::setup_internal_metrics(const model::ntp& ntp) {
     namespace sm = ss::metrics;
 
-    if (config::shard_local_cfg().disable_metrics()) {
+    if (
+      config::shard_local_cfg().disable_metrics()
+      || config::shard_local_cfg().disable_per_partition_metrics()) {
         return;
     }
 

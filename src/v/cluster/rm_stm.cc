@@ -2895,7 +2895,9 @@ std::ostream& operator<<(std::ostream& o, const rm_stm::log_state& state) {
 }
 
 void rm_stm::setup_metrics() {
-    if (config::shard_local_cfg().disable_metrics()) {
+    if (
+      config::shard_local_cfg().disable_metrics()
+      || config::shard_local_cfg().disable_per_partition_metrics()) {
         return;
     }
     namespace sm = ss::metrics;

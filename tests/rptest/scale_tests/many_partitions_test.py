@@ -964,6 +964,8 @@ class ManyPartitionsTest(PreallocNodesTest):
 
             #CUST
 
+            'space_management_enable': False,
+
             'enable_leader_balancer': True,
             'raft_recovery_concurrency_per_shard': 64,
             # 'raft_concurrent_votes_per_shard': 10_000,

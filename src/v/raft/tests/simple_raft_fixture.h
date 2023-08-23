@@ -80,6 +80,8 @@ struct simple_raft_fixture {
             ss::default_scheduling_group(),
             [] {
                 return raft::group_manager::configuration{
+                  .election_timeout
+                  = config::mock_binding<std::chrono::milliseconds>(1500ms),
                   .heartbeat_interval
                   = config::mock_binding<std::chrono::milliseconds>(100ms),
                   .heartbeat_timeout

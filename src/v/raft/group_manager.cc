@@ -53,6 +53,22 @@ group_manager::group_manager(
   , _feature_table(feature_table.local())
   , _is_ready(false) {
     setup_metrics();
+
+    _configuration.election_timeout.watch([this] {
+        ssx::spawn_with_gate(_gate, [this] {
+            return do_update_election_timeout(
+              _configuration.election_timeout());
+        });
+    });
+}
+
+ss::future<>
+group_manager::do_update_election_timeout(std::chrono::milliseconds timeout) {
+    auto groups = _groups;
+    for (const auto& g : groups) {
+        g->update_election_timeout(raft::timeout_jitter{timeout});
+        co_await ss::maybe_yield();
+    }
 }
 
 ss::future<> group_manager::start() {

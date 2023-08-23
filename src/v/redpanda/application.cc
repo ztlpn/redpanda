@@ -1105,6 +1105,8 @@ void application::wire_up_redpanda_services(
         sched_groups.raft_sg(),
         [] {
             return raft::group_manager::configuration{
+              .election_timeout
+              = config::shard_local_cfg().raft_election_timeout_ms.bind(),
               .heartbeat_interval
               = config::shard_local_cfg().raft_heartbeat_interval_ms.bind(),
               .heartbeat_timeout

@@ -40,6 +40,7 @@ public:
       raft::group_id, model::term_id, std::optional<model::node_id>)>;
 
     struct configuration {
+        config::binding<std::chrono::milliseconds> election_timeout;
         config::binding<std::chrono::milliseconds> heartbeat_interval;
         config::binding<std::chrono::milliseconds> heartbeat_timeout;
         config::binding<std::chrono::milliseconds> raft_io_timeout_ms;
@@ -94,6 +95,7 @@ public:
 private:
     void trigger_leadership_notification(raft::leadership_status);
     void setup_metrics();
+    ss::future<> do_update_election_timeout(std::chrono::milliseconds);
 
     raft::group_configuration create_initial_configuration(
       std::vector<model::broker>, model::revision_id) const;

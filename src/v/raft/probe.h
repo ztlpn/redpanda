@@ -50,7 +50,8 @@ public:
     static std::vector<ss::metrics::label_instance>
     create_metric_labels(const model::ntp& ntp);
 
-    void setup_metrics(const model::ntp& ntp);
+    // nullptr means setup global metrics
+    void setup_metrics(const model::ntp* ntp);
     void setup_public_metrics(const model::ntp& ntp);
 
     void heartbeat_request_error() { ++_heartbeat_request_error; };

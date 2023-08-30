@@ -1378,3 +1378,69 @@ class ManyPartitionsTest(PreallocNodesTest):
                     f"Expected throughput {expect_mbps:.2f}, got throughput {actual_mbps:.2f}MB/s"
                 )
                 raise
+
+class MyTest(RedpandaTest):
+    def setUp(self):
+        pass
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args,
+                         num_brokers=3,
+                         log_config=LoggingConfig('info',
+                                                  logger_levels={
+                                                      'storage': 'warn',
+                                                      'storage-gc': 'warn',
+                                                      'cluster': 'warn',
+                                                      'raft': 'warn',
+                                                      'offset_translator':
+                                                      'warn',
+                                                      'tx': 'warn',
+                                                  }),
+                         **kwargs)
+
+    @cluster(num_nodes=4)
+    def test(self):
+        self.redpanda.add_extra_rp_conf({
+            'topic_partitions_per_shard': 10_000,
+            'topic_memory_per_partition': None,
+        })
+        self.redpanda.start()
+
+        from rptest.clients.rpk import RpkTool
+        RpkTool(self.redpanda).create_topic('mytopic',
+                                            partitions=10_000,
+                                            replicas=3)
+
+        from rptest.services.kgo_repeater_service import repeater_traffic
+        import time
+
+        with repeater_traffic(context=self.test_context,
+                              redpanda=self.redpanda,
+                              topic='mytopic',
+                              msg_size=16384,
+                              workers=64,
+                              max_buffered_records=64,
+                              rate_limit_bps=50 * 2**20) as repeater:
+            prev_count = 0
+            prev_fast = 0
+
+            for _ in range(100):
+                time.sleep(1)
+                metrics = self.redpanda.metrics(self.redpanda.nodes[0])
+                name = 'vectorized_kafka_handler_latency_microseconds_bucket'
+                count = 0
+                fast = 0
+                for family in metrics:
+                    for sample in family.samples:
+                        if name in sample.name and sample.labels[
+                                'handler'] == 'produce' and sample.labels[
+                                    'shard'] == '0':
+                            if float(sample.labels['le']) < 300_000:
+                                fast = max(fast, sample.value)
+                            count = max(count, sample.value)
+                if count > prev_count:
+                    self.logger.warn(
+                        f'{count - prev_count}, {(fast - prev_fast)/(count-prev_count):2}'
+                    )
+                    prev_count = count
+                    prev_fast = fast

@@ -85,7 +85,6 @@
 #include "redpanda/admin/api-doc/usage.json.hh"
 #include "resource_mgmt/memory_sampling.h"
 #include "rpc/errc.h"
-#include "rpc/rpc_utils.h"
 #include "security/acl.h"
 #include "security/credential_store.h"
 #include "security/scram_algorithm.h"
@@ -545,7 +544,7 @@ ss::future<> admin_server::configure_listeners() {
                   [](
                     const std::unordered_set<ss::sstring>& updated,
                     const std::exception_ptr& eptr) {
-                      rpc::log_certificate_reload_event(
+                      cluster::log_certificate_reload_event(
                         logger, "API TLS", updated, eptr);
                   });
             }

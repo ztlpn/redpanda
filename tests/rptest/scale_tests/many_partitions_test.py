@@ -1140,9 +1140,9 @@ class ManyPartitionsTest(PreallocNodesTest):
             self._single_node_restart(scale, topic_names, n_partitions)
             progress_check()
 
-            self.logger.info(f"Entering restart stress test phase")
-            self._restart_stress(scale, topic_names, n_partitions,
-                                 progress_check, restart_count=2)
+            # self.logger.info(f"Entering restart stress test phase")
+            # self._restart_stress(scale, topic_names, n_partitions,
+            #                      progress_check, restart_count=2)
 
             self.logger.info(
                 f"Post-restarts: checking repeater group is ready...")

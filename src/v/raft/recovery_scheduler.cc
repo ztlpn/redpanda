@@ -18,11 +18,11 @@ namespace raft {
 
 follower_recovery_state::follower_recovery_state(
   recovery_scheduler_base& scheduler,
-  consensus& parent,
+  std::unique_ptr<consensus_iface> parent,
   model::offset our_last,
   model::offset leader_last,
   bool already_recovering)
-  : _parent(&parent)
+  : _parent(std::move(parent))
   , _is_active(already_recovering)
   , _our_last_offset(our_last)
   , _leader_last_offset(leader_last)
@@ -214,7 +214,7 @@ void recovery_scheduler_base::activate_some() {
     absl::btree_map<int, ss::chunked_fifo<item>> priority2items;
     size_t leaderless_count = 0;
     for (auto& frs : _pending) {
-        auto leader_id = frs._parent->get_leader_id();
+        auto leader_id = frs._parent->leader_id();
         if (!leader_id) {
             // don't schedule leaderless partitions at all, as it is unclear if
             // they will be able to make progress.
@@ -230,10 +230,7 @@ void recovery_scheduler_base::activate_some() {
             // operational before waiting for all the user data to be recovered.
             priority = -1;
         } else {
-            auto config = frs._parent->config();
-            bool is_learner = !config.contains(frs._parent->self())
-                              || !config.is_voter(frs._parent->self());
-            if (is_learner) {
+            if (frs._parent->is_learner()) {
                 // learners (i.e. partitions on the nodes where they are being
                 // moved to) get lower priority as we want partitions to regain
                 // their full replication factor first (we typically wait for
@@ -253,7 +250,7 @@ void recovery_scheduler_base::activate_some() {
 
     absl::flat_hash_map<model::node_id, size_t> node2active_count;
     for (const auto& frs : _active) {
-        auto leader_id = frs._parent->get_leader_id();
+        auto leader_id = frs._parent->leader_id();
         if (!leader_id) {
             leaderless_count += 1;
             continue;

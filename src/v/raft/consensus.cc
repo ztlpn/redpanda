@@ -3808,9 +3808,25 @@ void consensus::upsert_recovery_state(
                           features::feature::raft_coordinated_recovery);
 
     if (!_follower_recovery_state) {
+        struct iface : follower_recovery_state::consensus_iface {
+            const model::ntp& ntp() const override { return c->ntp(); };
+            std::optional<model::node_id> leader_id() const override {
+                return c->get_leader_id();
+            };
+            bool is_learner() const override {
+                auto config = c->config();
+                return !config.contains(c->self())
+                       || !config.is_voter(c->self());
+            };
+
+            explicit iface(const consensus* c)
+              : c(c) {}
+            const consensus* c = nullptr;
+        };
+
         _follower_recovery_state.emplace(
           _recovery_scheduler,
-          *this,
+          std::make_unique<iface>(this),
           our_last_offset,
           leader_last_offset,
           force_active);

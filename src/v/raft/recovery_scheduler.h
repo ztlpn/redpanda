@@ -57,9 +57,17 @@ struct recovery_status {
  */
 class follower_recovery_state {
 public:
+    class consensus_iface {
+    public:
+        virtual const model::ntp& ntp() const = 0;
+        virtual std::optional<model::node_id> leader_id() const = 0;
+        virtual bool is_learner() const = 0;
+        virtual ~consensus_iface() = default;
+    };
+
     follower_recovery_state(
       recovery_scheduler_base& scheduler,
-      consensus& parent,
+      std::unique_ptr<consensus_iface> parent,
       model::offset our_last,
       model::offset leader_last,
       bool force_active);
@@ -84,7 +92,7 @@ public:
 private:
     friend class recovery_scheduler_base;
 
-    consensus* _parent = nullptr;
+    std::unique_ptr<consensus_iface> _parent;
 
     bool _is_active = false;
     model::offset _our_last_offset;

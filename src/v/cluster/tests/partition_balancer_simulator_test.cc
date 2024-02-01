@@ -30,10 +30,10 @@ static constexpr size_t recovery_throttle_ticks_between_refills = 10;
 /// produced batch), the distribution will be approximately gaussian with stddev
 /// sqrt(mean number of items). We use this function to calculate partition size
 /// jitter.
-static size_t add_sqrt_jitter(size_t mean, size_t item_size) {
+[[maybe_unused]] static size_t add_sqrt_jitter(size_t mean, size_t item_size) {
     std::normal_distribution<> dist(0, sqrt(double(mean) / item_size));
-    auto jitter = std::min(
-      int(mean), int(item_size * dist(random_generators::internal::gen)));
+    auto jitter = std::max(
+      -int(mean), int(item_size * dist(random_generators::internal::gen)));
     return mean + jitter;
 }
 
@@ -89,16 +89,26 @@ public:
       const ss::sstring& name,
       int partitions,
       int16_t replication_factor,
-      size_t mean_partition_size) {
+      size_t mean_partition_size,
+      std::optional<double> stddev = std::nullopt) {
         auto tp_ns = model::topic_namespace(test_ns, model::topic(name));
         auto topic_conf = _workers.make_tp_configuration(
           name, partitions, replication_factor);
         _workers.dispatch_topic_command(
           cluster::create_topic_cmd(tp_ns, topic_conf));
+
+        if (!stddev) {
+            stddev = produce_batch_size
+                     * sqrt(double(mean_partition_size) / produce_batch_size);
+        }
+        std::normal_distribution<> dist(0, 1);
+
         for (const auto& as : topic_conf.assignments) {
             model::ntp ntp{tp_ns.ns, tp_ns.tp, as.id};
-            auto size = add_sqrt_jitter(
-              mean_partition_size, produce_batch_size);
+            auto jitter = std::max(
+              -int(mean_partition_size),
+              int(*stddev * dist(random_generators::internal::gen)));
+            auto size = mean_partition_size + jitter;
             auto partition = ss::make_lw_shared<partition_state>(ntp, size);
             _partitions.emplace(ntp, partition);
 
@@ -717,5 +727,45 @@ FIXTURE_TEST(
     BOOST_REQUIRE(run_to_completion(100));
     for (const auto& [id, node] : nodes()) {
         BOOST_REQUIRE(double(node.used) / node.total < 0.8);
+    }
+}
+
+FIXTURE_TEST(test_heterogeneous_topics, partition_balancer_sim_fixture) {
+    for (size_t i = 0; i < 9; ++i) {
+        add_node(model::node_id{i}, 300_GiB);
+    }
+
+    add_topic("topic_1", 200, 3, 2_GiB, 200_MiB);
+    add_topic("topic_2", 800, 3, 10_MiB, 1_MiB);
+
+    for (size_t i = 9; i < 12; ++i) {
+        add_node(model::node_id{i}, 300_GiB);
+        add_node_to_rebalance(model::node_id{i});
+    }
+
+    BOOST_REQUIRE(run_to_completion(1000));
+
+    absl::
+      node_hash_map<ss::sstring, absl::flat_hash_map<model::node_id, size_t>>
+        topic_replica_distribution;
+
+    absl::node_hash_map<model::topic_namespace, size_t> total_topic_replicas;
+
+    for (auto& [tp_ns, topic_md] : topics().all_topics_metadata()) {
+        for (auto& p_as : topic_md.get_assignments()) {
+            for (auto& r : p_as.replicas) {
+                topic_replica_distribution[tp_ns.tp()][r.node_id]++;
+            }
+        }
+    }
+
+    std::vector<std::pair<model::node_id, size_t>> counts;
+    for (auto [id, count] : topic_replica_distribution["topic_1"]) {
+        counts.emplace_back(id, count);
+    }
+    std::sort(counts.begin(), counts.end());
+
+    for (auto [id, count] : counts) {
+        logger.info("node {} count {}", id, count);
     }
 }

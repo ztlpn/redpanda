@@ -46,6 +46,8 @@ std::vector<model::node_id> solve_hard_constraints(
   const std::vector<model::broker_shard>& current_replicas,
   const std::vector<hard_constraint_ptr>& constraints,
   const allocation_state::underlying_t& nodes) {
+    vlog(clusterlog.trace, "applying hard constraints: {}", constraints);
+
     std::vector<hard_constraint_evaluator> evaluators;
     evaluators.reserve(constraints.size());
     for (auto& c : constraints) {
@@ -88,6 +90,9 @@ std::vector<model::node_id> optimize_constraints(
   const soft_constraints_level& constraints,
   const std::vector<model::broker_shard>& current_replicas,
   const allocation_state::underlying_t& allocation_nodes) {
+    vlog(
+      clusterlog.trace, "optimizing soft constraints level: {}", constraints);
+
     std::vector<soft_constraint_evaluator> evaluators;
     evaluators.reserve(constraints.size());
     for (auto& c : constraints) {
@@ -135,6 +140,11 @@ std::vector<model::node_id> optimize_constraints(
 
     vassert(!best_fits.empty(), "best_fits empty");
 
+    vlog(
+      clusterlog.trace,
+      "after optimizing soft constraints level, eligible nodes: {}",
+      best_fits);
+
     // we break ties randomly, by selecting a random node out of those
     // with the highest score
     return best_fits;
@@ -175,6 +185,11 @@ allocation_strategy simple_allocation_strategy() {
               current_replicas,
               request.hard_constraints,
               state.allocation_nodes());
+
+            vlog(
+              clusterlog.trace,
+              "after applying hard constraints, eligible nodes: {}",
+              possible_nodes);
 
             if (possible_nodes.empty()) {
                 return errc::no_eligible_allocation_nodes;

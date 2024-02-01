@@ -1045,9 +1045,17 @@ partition_balancer_planner::reassignable_partition::get_allocation_constraints(
   double max_disk_usage_ratio) const {
     allocation_constraints constraints;
 
-    // Add constraint on least disk usage
-    constraints.add(
-      least_disk_filled(max_disk_usage_ratio, _ctx.node_disk_reports));
+    // hard constraints:
+
+    // Add constraint on decommissioning nodes
+    if (!_ctx.decommissioning_nodes.empty()) {
+        constraints.add(distinct_from(_ctx.decommissioning_nodes));
+    }
+
+    // Add constraint on unavailable nodes
+    if (!_ctx.timed_out_unavailable_nodes.empty()) {
+        constraints.add(distinct_from(_ctx.timed_out_unavailable_nodes));
+    }
 
     // Add constraint on partition max_disk_usage_ratio overfill
     size_t upper_bound_for_partition_size
@@ -1057,13 +1065,14 @@ partition_balancer_planner::reassignable_partition::get_allocation_constraints(
       upper_bound_for_partition_size,
       _ctx.node_disk_reports));
 
-    // Add constraint on unavailable nodes
-    constraints.add(distinct_from(_ctx.timed_out_unavailable_nodes));
+    // soft contstraints:
 
-    // Add constraint on decommissioning nodes
-    if (!_ctx.decommissioning_nodes.empty()) {
-        constraints.add(distinct_from(_ctx.decommissioning_nodes));
-    }
+    // balance counts
+    constraints.add(max_final_capacity());
+
+    // Add constraint on least disk usage
+    constraints.add(
+      least_disk_filled(max_disk_usage_ratio, _ctx.node_disk_reports));
 
     return constraints;
 }

@@ -120,6 +120,11 @@ public:
             }
 
             elect_leader(ntp);
+            logger.info(
+              "added ntp {}, replicas {}, size {}",
+              ntp,
+              as.replicas,
+              human::bytes(size));
         }
     }
 
@@ -768,4 +773,33 @@ FIXTURE_TEST(test_heterogeneous_topics, partition_balancer_sim_fixture) {
     for (auto [id, count] : counts) {
         logger.info("node {} count {}", id, count);
     }
+}
+
+FIXTURE_TEST(test_many_topics, partition_balancer_sim_fixture) {
+    for (size_t i = 0; i < 4; ++i) {
+        add_node(model::node_id{i}, 100_GiB);
+    }
+
+    for (size_t i = 0; i < 100; ++i) {
+        auto n_partitions = random_generators::get_int(2, 5);
+
+        // take mean topic partition sizes from a bimodal distribution - 20% of
+        // the topics will be big.
+        auto partition_size = random_generators::get_int(0, 4) == 0 ? 1_GiB
+                                                                    : 10_MiB;
+
+        add_topic(
+          ssx::sformat("topic_{}", i),
+          n_partitions,
+          3,
+          partition_size,
+          partition_size / 10);
+    }
+
+    for (size_t i = 4; i < 6; ++i) {
+        add_node(model::node_id{i}, 100_GiB);
+        add_node_to_rebalance(model::node_id{i});
+    }
+
+    BOOST_REQUIRE(run_to_completion(1000));
 }

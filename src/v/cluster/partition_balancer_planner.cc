@@ -1831,6 +1831,11 @@ ss::future<> partition_balancer_planner::get_counts_rebalancing_actions(
         auto total_count = double(it->second->domain_final_partitions(
                              get_allocation_domain(ntp)))
                            / it->second->max_capacity();
+
+        // auto disk_it = ctx.node_disk_reports.find(id);
+        // vassert(disk_it != ctx.node_disk_reports.end(), "TODO");
+        // double disk_usage = disk_it->second.final_used_ratio();
+
         return std::vector{topic_count, total_count};
     };
 

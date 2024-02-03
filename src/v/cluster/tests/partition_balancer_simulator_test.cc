@@ -43,7 +43,8 @@ public:
       model::node_id id,
       size_t total_size,
       uint32_t n_cores = 4,
-      std::optional<model::rack_id> rack = std::nullopt) {
+      std::optional<model::rack_id> rack = std::nullopt,
+      std::optional<size_t> initial_used = std::nullopt) {
         vassert(!_nodes.contains(id), "duplicate node id: {}", id);
 
         model::broker broker(
@@ -68,11 +69,15 @@ public:
             config::mock_binding<std::vector<ss::sstring>>({})));
 
         // add some random initial used space
-        size_t initial_used = random_generators::get_int(
-          3 * total_size / 100, 5 * total_size / 100);
+        if (!initial_used) {
+            initial_used = random_generators::get_int(
+              3 * total_size / 100, 5 * total_size / 100);
+        }
 
         _nodes.emplace(
-          id, node_state{.id = id, .total = total_size, .used = initial_used});
+          id,
+          node_state{
+            .id = id, .total = total_size, .used = initial_used.value()});
     }
 
     const auto& nodes() const { return _nodes; }
@@ -786,6 +791,39 @@ FIXTURE_TEST(test_many_topics, partition_balancer_sim_fixture) {
 
     validate_even_replica_distribution();
     validate_even_topic_distribution();
+}
+
+FIXTURE_TEST(test_single_replica_topics, partition_balancer_sim_fixture) {
+    add_node(model::node_id{0}, 100_GiB, 4, std::nullopt, 0);
+
+    for (size_t i = 0; i < 20; ++i) {
+        // partition sizes all over the place
+        auto size = random_generators::get_int(1, 10) * 1_GiB;
+        add_topic(ssx::sformat("topic_{}", i), 1, 1, size, 0);
+    }
+
+    add_node(model::node_id{1}, 100_GiB, 4, std::nullopt, 0);
+    add_node_to_rebalance(model::node_id{1});
+
+    BOOST_REQUIRE(run_to_completion(100));
+    // validate_even_replica_distribution();
+
+    for (const auto& [id, node] : nodes()) {
+        std::vector<size_t> sizes;
+        for (const auto& [ntp, replica] : node.replicas) {
+            sizes.push_back(replica.local_size);
+        }
+        std::sort(sizes.begin(), sizes.end());
+        std::vector<ss::sstring> size_strs;
+        for (auto s : sizes) {
+            size_strs.push_back(ssx::sformat("{}", human::bytes(s)));
+        }
+        logger.info(
+          "node {}: used {}, replicas: {}",
+          id,
+          human::bytes(node.used),
+          size_strs);
+    }
 }
 
 FIXTURE_TEST(test_smol, partition_balancer_sim_fixture) {

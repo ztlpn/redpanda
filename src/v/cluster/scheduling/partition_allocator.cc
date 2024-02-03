@@ -60,18 +60,18 @@ partition_allocator::partition_allocator(
   , _enable_rack_awareness(std::move(enable_rack_awareness)) {}
 
 allocation_constraints partition_allocator::default_constraints(
-  const partition_allocation_domain domain) {
+  const partition_allocation_domain /*domain*/) {
     allocation_constraints req;
 
     req.add(distinct_nodes());
     req.add(not_fully_allocated());
     req.add(is_active());
 
-    if (domain == partition_allocation_domains::common) {
-        req.add(max_final_capacity());
-    } else {
-        req.add(max_final_capacity_in_domain(domain));
-    }
+    // if (domain == partition_allocation_domains::common) {
+    //     req.add(max_final_capacity());
+    // } else {
+    //     req.add(max_final_capacity_in_domain(domain));
+    // }
     if (_enable_rack_awareness()) {
         req.add(distinct_rack_preferred(_members.local()));
     }

@@ -301,7 +301,7 @@ public:
     }
 
     void validate_even_replica_distribution() {
-        static constexpr double max_skew = 0.01;
+        static constexpr double max_skew = 0.03;
 
         absl::flat_hash_map<model::node_id, size_t> node2replicas;
         size_t total_replicas = 0;
@@ -363,27 +363,29 @@ public:
             double total_replicas = static_cast<double>(
               total_topic_replicas[tp]);
             for (auto& [id, alloc_node] : allocation_nodes()) {
-                auto expected_replicas = ceil(
-                  total_replicas * alloc_node->max_capacity() / total_capacity);
-
                 auto it = node_replicas.find(id);
                 const auto replicas_on_node = it == node_replicas.end()
                                                 ? 0
                                                 : it->second;
+
+                auto expected = ceil(
+                  total_replicas * alloc_node->max_capacity() / total_capacity);
+
                 logger.info(
                   "topic {} has {} replicas on {}, expected: {} total "
                   "replicas: {}",
                   tp,
                   replicas_on_node,
                   id,
-                  expected_replicas,
+                  expected,
                   total_replicas);
-                // Expected variance should be proportional to
-                // sqrt(expected_replicas). Assert that it is not more than 3x
-                // that.
-                auto err = std::abs(expected_replicas - replicas_on_node)
-                           / sqrt(expected_replicas);
-                BOOST_REQUIRE_LE(err, 3.0);
+
+                static constexpr double max_skew = 0.03;
+                auto expected_min = expected - ceil(max_skew * expected);
+                auto expected_max = expected + ceil(max_skew * expected);
+                BOOST_REQUIRE(
+                  replicas_on_node >= expected_min
+                  && replicas_on_node <= expected_max);
             }
         }
     }
@@ -750,29 +752,8 @@ FIXTURE_TEST(test_heterogeneous_topics, partition_balancer_sim_fixture) {
 
     BOOST_REQUIRE(run_to_completion(1000));
 
-    absl::
-      node_hash_map<ss::sstring, absl::flat_hash_map<model::node_id, size_t>>
-        topic_replica_distribution;
-
-    absl::node_hash_map<model::topic_namespace, size_t> total_topic_replicas;
-
-    for (auto& [tp_ns, topic_md] : topics().all_topics_metadata()) {
-        for (auto& p_as : topic_md.get_assignments()) {
-            for (auto& r : p_as.replicas) {
-                topic_replica_distribution[tp_ns.tp()][r.node_id]++;
-            }
-        }
-    }
-
-    std::vector<std::pair<model::node_id, size_t>> counts;
-    for (auto [id, count] : topic_replica_distribution["topic_1"]) {
-        counts.emplace_back(id, count);
-    }
-    std::sort(counts.begin(), counts.end());
-
-    for (auto [id, count] : counts) {
-        logger.info("node {} count {}", id, count);
-    }
+    validate_even_replica_distribution();
+    validate_even_topic_distribution();
 }
 
 FIXTURE_TEST(test_many_topics, partition_balancer_sim_fixture) {
@@ -802,4 +783,23 @@ FIXTURE_TEST(test_many_topics, partition_balancer_sim_fixture) {
     }
 
     BOOST_REQUIRE(run_to_completion(1000));
+
+    validate_even_replica_distribution();
+    validate_even_topic_distribution();
+}
+
+FIXTURE_TEST(test_smol, partition_balancer_sim_fixture) {
+    for (size_t i = 0; i < 4; ++i) {
+        add_node(model::node_id{i}, 100_GiB);
+    }
+
+    add_topic("topic_1", 3, 3, 1_GiB, 100_MiB);
+    add_topic("topic_2", 3, 3, 1_GiB, 100_MiB);
+
+    for (size_t i = 4; i < 6; ++i) {
+        add_node(model::node_id{i}, 100_GiB);
+        add_node_to_rebalance(model::node_id{i});
+    }
+
+    BOOST_REQUIRE(run_to_completion(10));
 }

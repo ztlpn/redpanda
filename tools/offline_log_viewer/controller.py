@@ -833,6 +833,11 @@ def decode_node_management_command(k_rdr: Reader, rdr: Reader):
             'uuid': k_rdr.read_uuid(),
             'id': rdr.read_optional(lambda r: r.read_int32())
         }
+    elif cmd['type'] == 5:
+        cmd |= {
+            'type_string': 'add_node',
+            'broker': rdr.read_envelope(lambda r, _: {'id': r.read_int32()}),
+        }
     return cmd
 
 

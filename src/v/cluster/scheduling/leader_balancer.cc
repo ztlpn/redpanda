@@ -633,6 +633,7 @@ leader_balancer::build_group_id_to_topic_rev() const {
 /// this case callers have to rely on shard info from topic table.
 ss::future<std::optional<leader_balancer::group_replicas_t>>
 leader_balancer::collect_group_replicas_from_health_report() {
+    // co_return std::nullopt;
     if (!_feature_table.is_active(
           features::feature::partition_shard_in_health_report)) {
         co_return std::nullopt;
@@ -684,6 +685,8 @@ leader_balancer::index_type leader_balancer::build_index(
   std::optional<leader_balancer::group_replicas_t> group_replicas) {
     absl::flat_hash_set<model::broker_shard> cores;
     index_type index;
+
+    absl::flat_hash_map<model::broker_shard, size_t> core2replicas;
 
     // for each ntp in the cluster
     for (const auto& topic : _topics.topics_map()) {
@@ -816,6 +819,7 @@ leader_balancer::index_type leader_balancer::build_index(
             // track superset of cores
             for (const auto& replica : replicas) {
                 cores.emplace(replica);
+                core2replicas[replica] += 1;
             }
 
             if (needs_mute) {
@@ -847,6 +851,13 @@ leader_balancer::index_type leader_balancer::build_index(
      */
     for (const auto& core : cores) {
         index.try_emplace(core);
+    }
+
+    std::vector<std::pair<model::broker_shard, size_t>> pairs(
+      core2replicas.begin(), core2replicas.end());
+    std::sort(pairs.begin(), pairs.end());
+    for (const auto& [k, v] : pairs) {
+        vlog(clusterlog.info, "core {}: {} replicas", k, v);
     }
 
     return index;

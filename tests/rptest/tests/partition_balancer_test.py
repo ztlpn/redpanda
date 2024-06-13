@@ -749,6 +749,68 @@ class PartitionBalancerTest(PartitionBalancerService):
             assert used_ratio < 0.81
 
     @cluster(num_nodes=6, log_allow_list=CHAOS_LOG_ALLOW_LIST)
+    def test_lb(self):
+        self.start_redpanda(
+            num_nodes=5,
+            num_started_nodes=4,
+            extra_rp_conf={
+                "raft_learner_recovery_rate": 500_000,
+                "raft_recovery_default_read_size": 128 * 1024,
+                "health_monitor_max_metadata_age": 3000,
+                "log_segment_size": 104857600,  # 100 MiB
+                "disk_reservation_percent": 0.0,
+                "partition_autobalancing_concurrent_moves": 10,
+                "leader_balancer_idle_timeout": 17_000,
+                "partition_autobalancing_max_disk_usage_percent": 99,
+            })
+
+        self.topic = TopicSpec(partition_count=100)
+        self.client().create_topic(self.topic)
+
+        msg_size = 4096
+        produce_batch_size = ceil(50 * 2**20 / msg_size)
+        producer = KgoVerifierProducer(self.test_context,
+                                       self.redpanda,
+                                       self.topic,
+                                       msg_size=msg_size,
+                                       msg_count=produce_batch_size)
+        producer.start(clean=False)
+        producer.wait_for_acks(produce_batch_size,
+                               timeout_sec=120,
+                               backoff_sec=5)
+        producer.stop()
+        producer.free()
+
+        joiner_nodes = self.redpanda.nodes[4:]
+        for node in joiner_nodes:
+            self.redpanda.start_node(node,
+                                     auto_assign_node_id=True,
+                                     omit_seeds_on_idx_one=False)
+        self.redpanda.wait_for_membership(first_start=False)
+
+        admin = Admin(self.redpanda)
+
+        def get_leaders_by_node():
+            node2count = dict()
+            for n in self.redpanda.started_nodes():
+                node_id = self.redpanda.node_id(n)
+                partitions = admin.get_partitions(node=n)
+                res = [0, len(partitions)]
+                node2count[node_id] = res
+                for p in partitions:
+                    if p.get('leader') == node_id:
+                        res[0] += 1
+            return node2count
+
+        def waiter(s):
+            self.logger.warn(f"------")
+            for node, count in sorted(get_leaders_by_node().items()):
+                self.logger.warn(f"FFF node {node} counts {count}")
+            return s["status"] == "ready"
+
+        self.wait_until_status(waiter, timeout_sec=300)
+
+    @cluster(num_nodes=6, log_allow_list=CHAOS_LOG_ALLOW_LIST)
     def test_nodes_with_reclaimable_space(self):
         """
         Test partition balancer cooperation with space management policy

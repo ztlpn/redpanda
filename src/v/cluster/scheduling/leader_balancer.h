@@ -183,12 +183,12 @@ private:
         model::broker_shard shard;
         clock_type::time_point expires;
     };
-    absl::btree_map<raft::group_id, last_known_leader> _last_leader;
+    chunked_hash_map<raft::group_id, last_known_leader> _last_leader;
 
     leader_balancer_probe _probe;
     bool _need_controller_refresh{true};
     bool _throttled{false};
-    absl::btree_map<raft::group_id, clock_type::time_point> _muted;
+    chunked_hash_map<raft::group_id, clock_type::time_point> _muted;
     cluster::notification_id_type _leader_notify_handle;
     std::optional<cluster::notification_id_type>
       _leadership_change_notify_handle;

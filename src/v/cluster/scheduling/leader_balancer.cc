@@ -23,6 +23,7 @@
 #include "cluster/scheduling/leader_balancer_types.h"
 #include "cluster/shard_table.h"
 #include "cluster/topic_table.h"
+#include "cluster_utils.h"
 #include "config/node_config.h"
 #include "model/metadata.h"
 #include "model/namespace.h"
@@ -557,8 +558,7 @@ ss::future<ss::stop_iteration> leader_balancer::balance() {
          * avoid thrashing (we'll still mute the group), but also because we may
          * have simply been racing with organic leadership movement.
          */
-        _muted.try_emplace(
-          transfer->group, clock_type::now() + _mute_timeout());
+        mute_group(transfer->group, _mute_timeout());
     }
 
     co_return ss::stop_iteration::no;
@@ -594,6 +594,15 @@ absl::flat_hash_set<model::node_id> leader_balancer::muted_nodes() const {
         }
     }
     return nodes;
+}
+
+void leader_balancer::mute_group(
+  raft::group_id group, clock_type::duration timeout) {
+    auto deadline = clock_type::now() + timeout;
+    auto it = _muted.emplace(group, deadline).first;
+    if (it->second < deadline) {
+        it->second = deadline;
+    }
 }
 
 leader_balancer_types::muted_groups_t leader_balancer::muted_groups() const {
@@ -708,6 +717,10 @@ leader_balancer::index_type leader_balancer::build_index(
                 continue;
             }
 
+            auto ntp = model::ntp(topic.first.ns, topic.first.tp, partition.id);
+            auto replicas_view = _topics.get_replicas_view(
+              ntp, topic.second, partition);
+
             replicas_t replicas;
             if (group_replicas) {
                 auto it = group_replicas->find(partition.group);
@@ -716,26 +729,24 @@ leader_balancer::index_type leader_balancer::build_index(
                       clusterlog.info,
                       "skipping partition without replicas in health report: "
                       "{} (replicas in topic table: {})",
-                      model::ntp(topic.first.ns, topic.first.tp, partition.id),
-                      partition.replicas);
+                      ntp,
+                      replicas_view);
                     continue;
                 }
-                replicas = std::move(it->second);
-                vassert(
-                  !replicas.empty(),
-                  "[{}] expected non-empty replica set",
-                  model::ntp(topic.first.ns, topic.first.tp, partition.id));
             } else {
                 // Node-local shard assignment not yet enabled, using shard info
                 // from the topic table.
-                if (partition.replicas.empty()) {
-                    vlog(
-                      clusterlog.warn,
-                      "skipping partition without replicas in topic table: {}",
-                      model::ntp(topic.first.ns, topic.first.tp, partition.id));
-                    continue;
-                }
-                replicas = partition.replicas;
+                replicas = replicas_view.orig_replicas();
+            }
+
+            if (replicas.empty()) {
+                vlog(
+                  clusterlog.info,
+                  "skipping partition with unknown original replica shards: {} "
+                  "(replicas in topic table: {})",
+                  ntp,
+                  replicas_view);
+                continue;
             }
 
             /*
@@ -759,12 +770,19 @@ leader_balancer::index_type leader_balancer::build_index(
             std::optional<model::broker_shard> leader_core;
             auto leader_node = _leaders.get_leader(topic.first, partition.id);
             if (leader_node) {
-                auto it = std::find_if(
-                  replicas.cbegin(),
-                  replicas.cend(),
-                  [node = *leader_node](const auto& replica) {
-                      return replica.node_id == node;
-                  });
+                if (group_replicas) {
+                    auto it = std::find_if(
+                      replicas.cbegin(),
+                      replicas.cend(),
+                      [node = *leader_node](const auto& replica) {
+                          return replica.node_id == node;
+                      });
+                    if (it != replicas.cend()) {
+                        leader_core = *it;
+                    }
+                } else {
+                    leader_core = find_shard_on_node(const replicas_t &replicas, model::node_id node)
+                }
 
                 if (it != replicas.cend()) {
                     leader_core = *it;
@@ -780,7 +798,7 @@ leader_balancer::index_type leader_balancer::build_index(
                       partition.group,
                       *leader_node,
                       replicas,
-                      partition.replicas);
+                      replicas_view);
                 }
             }
 
@@ -790,7 +808,7 @@ leader_balancer::index_type leader_balancer::build_index(
              * imbalance. use the last known assignment if available, or
              * otherwise a random replica choice.
              */
-            bool needs_mute = false;
+            std::optional<clock_type::duration> mute_timeout;
             if (!leader_core) {
                 if (auto it = _last_leader.find(partition.group);
                     it != _last_leader.end()) {
@@ -813,7 +831,7 @@ leader_balancer::index_type leader_balancer::build_index(
                     vassert(!leader.empty(), "Failed to select replica");
                     leader_core = leader.front();
                 }
-                needs_mute = true;
+                mute_timeout = leader_activation_delay;
             }
 
             // track superset of cores
@@ -822,17 +840,8 @@ leader_balancer::index_type leader_balancer::build_index(
                 core2replicas[replica] += 1;
             }
 
-            if (needs_mute) {
-                auto it = _muted.find(partition.group);
-                if (
-                  it == _muted.end()
-                  || (it->second - clock_type::now())
-                       < leader_activation_delay) {
-                    _muted.insert_or_assign(
-                      it,
-                      partition.group,
-                      clock_type::now() + leader_activation_delay);
-                }
+            if (mute_timeout) {
+                mute_group(partition.group, *mute_timeout);
             }
 
             index[*leader_core][partition.group] = std::move(replicas);

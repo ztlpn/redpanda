@@ -19,6 +19,7 @@ from rptest.util import wait_until
 from rptest.clients.types import TopicSpec
 from rptest.tests.redpanda_test import RedpandaTest
 from rptest.services.admin import Admin
+from rptest.services.utils import BadLogLines
 from rptest.services.failure_injector import FailureInjector
 from rptest.services.cluster import cluster
 from rptest.services.chaos.types import NoProgressError
@@ -57,11 +58,24 @@ class SingleFaultTestBase(RedpandaTest):
             fault: faults.FaultBase | None,
             timings: TimingConfig = TimingConfig(),
             check_progress_during_fault: CheckProgressDuringFaultConfig
-            | None = None):
+            | None = None,
+            catch_log_errors_pattern: str | None = None):
         try:
             self._do_run(workload, fault, timings, check_progress_during_fault)
         finally:
             workload.stop_and_validate()
+
+            if catch_log_errors_pattern is not None:
+                node_to_lines = dict()
+                for node in self.redpanda.nodes:
+                    if self.redpanda.search_log_node(node,
+                                                     catch_log_errors_pattern):
+                        # include just the pattern in the exception,
+                        # don't bother with actual matched lines.
+                        node_to_lines[node] = [catch_log_errors_pattern]
+
+                if len(node_to_lines) > 0:
+                    raise BadLogLines(node_to_lines)
 
             if sys.exc_info()[0] is None:
                 # check crashes only if the test passed,

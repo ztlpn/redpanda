@@ -36,6 +36,7 @@ class IsolateLeaderFault(RecoverableFault):
         leader_id = Admin(self.redpanda).await_stable_leader(
             self.topic, partition=self.partition, namespace=self.namespace)
         self._leader = self.redpanda.get_node_by_id(leader_id)
+        self.redpanda.logger.warn(f"FFF isolate leader {leader_id}")
         FailureInjector(self.redpanda)._isolate(self._leader)
 
     def heal(self):

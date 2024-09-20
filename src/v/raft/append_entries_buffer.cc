@@ -27,6 +27,8 @@ append_entries_buffer::enqueue(append_entries_request&& r) {
     // reordering. Reordering may only happend if we would wait on condition
     // variable.
 
+    _cur_waiting += 1;
+
     return _flushed.wait([this] { return _requests.size() < _max_buffered; })
       .then([this, r = std::move(r), guard = std::move(guard)]() mutable {
           ss::promise<append_entries_reply> p;
@@ -36,7 +38,8 @@ append_entries_buffer::enqueue(append_entries_request&& r) {
           _enqueued.signal();
           // do not wait for the future to finish inside the gate
           return f;
-      });
+      })
+      .finally([this] { _cur_waiting -= 1; });
 }
 
 ss::future<> append_entries_buffer::stop() {
@@ -77,11 +80,17 @@ ss::future<> append_entries_buffer::flush() {
     auto requests = std::exchange(_requests, {});
     auto response_promises = std::exchange(_responses, {});
 
+    vlog(_consensus._ctxlog.info, "FFF acqiring waiters: {}", _cur_waiting);
     return _consensus._op_lock.get_units().then(
       [this,
        requests = std::move(requests),
        response_promises = std::move(response_promises)](
         ssx::semaphore_units u) mutable {
+          vlog(
+            _consensus._ctxlog.info,
+            "FFF granted reqs: {} waiters: {}",
+            requests.size(),
+            _cur_waiting);
           return do_flush(
             std::move(requests), std::move(response_promises), std::move(u));
       });
@@ -115,6 +124,12 @@ ss::future<> append_entries_buffer::do_flush(
 
     // units were released before flushing log
     co_await std::move(f);
+
+    vlog(
+      _consensus._ctxlog.info,
+      "FFF flushed, reqs: {}, waiters: {}",
+      replies.size(),
+      _cur_waiting);
 
     propagate_results(std::move(replies), std::move(response_promises));
     _flushed.broadcast();

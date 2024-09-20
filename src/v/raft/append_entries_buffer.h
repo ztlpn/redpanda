@@ -153,6 +153,7 @@ private:
     ss::gate _gate;
     ss::condition_variable _flushed;
     const size_t _max_buffered;
+    size_t _cur_waiting = 0;
 };
 
 } // namespace raft

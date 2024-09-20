@@ -328,6 +328,9 @@ class SingleTopicTest(SingleFaultTestBase):
 
         self.logger.info(f"waiting for progress")
 
+        rs = admin.get_partitions(topic=self.topic, partition=0)['replicas']
+        self.logger.warn(f'FFF REPLICAS {[r["node_id"] for r in rs]}')
+
         workload.wait_progress(timeout_sec=timings.wait_progress_timeout_s)
 
     @cluster(num_nodes=4)

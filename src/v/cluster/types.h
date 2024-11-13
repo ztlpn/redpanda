@@ -934,6 +934,16 @@ struct nt_lifecycle_marker
     auto serde_fields() { return std::tie(config, initial_revision_id); }
 };
 
+struct nt_iceberg_tombstone
+  : serde::envelope<
+      nt_iceberg_tombstone,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    model::revision_id last_deleted_revision;
+
+    auto serde_fields() { return std::tie(last_deleted_revision); }
+};
+
 struct topic_lifecycle_transition
   : serde::envelope<
       topic_lifecycle_transition,

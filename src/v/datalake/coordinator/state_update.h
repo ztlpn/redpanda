@@ -37,15 +37,16 @@ struct add_files_update
     static checked<add_files_update, stm_update_error> build(
       const topics_state&,
       const model::topic_partition&,
+      model::revision_id topic_revision,
       chunked_vector<translated_offset_range>);
-    auto serde_fields() { return std::tie(tp, entries); }
+    auto serde_fields() { return std::tie(tp, topic_revision, entries); }
 
     checked<std::nullopt_t, stm_update_error> can_apply(const topics_state&);
     checked<std::nullopt_t, stm_update_error>
     apply(topics_state&, model::offset);
 
     model::topic_partition tp;
-
+    model::revision_id topic_revision;
     // Expected to be ordered from lowest offset to highest offset.
     chunked_vector<translated_offset_range> entries;
 };

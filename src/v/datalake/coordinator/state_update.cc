@@ -28,9 +28,11 @@ std::ostream& operator<<(std::ostream& o, const update_key& u) {
 checked<add_files_update, stm_update_error> add_files_update::build(
   const topics_state& state,
   const model::topic_partition& tp,
+  model::revision_id topic_revision,
   chunked_vector<translated_offset_range> entries) {
     add_files_update update{
       .tp = tp,
+      .topic_revision = topic_revision,
       .entries = std::move(entries),
     };
     auto allowed = update.can_apply(state);
@@ -45,12 +47,22 @@ add_files_update::can_apply(const topics_state& state) {
     if (entries.empty()) {
         return stm_update_error{"No entries requested"};
     }
-    auto prt_state_opt = state.partition_state(tp);
-    if (!prt_state_opt.has_value()) {
-        // No entries at all, this partition hasn't ever added any files.
+    auto topic_it = state.topic_to_state.find(tp.topic);
+    if (topic_it == state.topic_to_state.end()) {
         return std::nullopt;
     }
-    const auto& prt_state = prt_state_opt.value().get();
+    auto cur_topic_rev = topic_it->second.revision;
+    if (topic_revision != cur_topic_rev) {
+        return std::nullopt;
+    }
+
+    auto partition_it = topic_it->second.pid_to_pending_files.find(
+      tp.partition);
+    if (partition_it == topic_it->second.pid_to_pending_files.end()) {
+        return std::nullopt;
+    }
+    const auto& prt_state = partition_it->second;
+
     if (
       prt_state.pending_entries.empty()
       && !prt_state.last_committed.has_value()) {
@@ -84,6 +96,15 @@ add_files_update::apply(topics_state& state, model::offset applied_offset) {
     const auto& topic = tp.topic;
     const auto& pid = tp.partition;
     auto& tp_state = state.topic_to_state[topic];
+    if (topic_revision < tp_state.revision) {
+        // Drop the files on the ground: TODO: add orphan container
+        return std::nullopt;
+    } else if (topic_revision > tp_state.revision) {
+        // Reset topic state
+        topic_state new_state;
+        new_state.revision = topic_revision;
+        tp_state = std::move(new_state);
+    }
     auto& partition_state = tp_state.pid_to_pending_files[pid];
     for (auto& e : entries) {
         partition_state.pending_entries.emplace_back(pending_entry{

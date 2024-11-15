@@ -54,6 +54,8 @@ std::ostream& operator<<(std::ostream& o, coordinator::errc e) {
         return o << "coordinator::errc::revision_mismatch";
     case coordinator::errc::timedout:
         return o << "coordinator::errc::timedout";
+    case coordinator::errc::other:
+        return o << "coordinator::errc::other";
     }
 }
 
@@ -394,6 +396,38 @@ coordinator::update_lifecycle_state(
         for (const auto& [_, partition_state] : topic.pid_to_pending_files) {
             if (!partition_state.pending_entries.empty()) {
                 // still have entries to commit
+                co_return ss::stop_iteration::yes;
+            }
+        }
+
+        if (topic.revision >= topic_table_.last_applied_revision()) {
+            // topic table not yet up-to-date
+            co_return ss::stop_iteration::yes;
+        }
+        auto tombstone_it = topic_table_.get_iceberg_tombstones().find(
+          model::topic_namespace_view{model::kafka_namespace, t});
+        if (tombstone_it != topic_table_.get_iceberg_tombstones().end()) {
+            auto tombstone_rev = tombstone_it->second.last_deleted_revision;
+            if (tombstone_rev >= topic.revision) {
+                auto drop_res = co_await file_committer_.drop_table(t);
+                if (drop_res.has_error()) {
+                    switch (drop_res.error()) {
+                    case file_committer::errc::shutting_down:
+                        co_return errc::shutting_down;
+                    case file_committer::errc::failed:
+                        vlog(
+                          datalake_log.warn,
+                          "failed to drop table for topic {}",
+                          t);
+                        co_return ss::stop_iteration::yes;
+                    }
+                }
+            }
+            auto ts_res = co_await remove_tombstone_(t, tombstone_rev);
+            if (ts_res.has_error()) {
+                if (ts_res.error() == errc::shutting_down) {
+                    co_return ts_res.error();
+                }
                 co_return ss::stop_iteration::yes;
             }
         }

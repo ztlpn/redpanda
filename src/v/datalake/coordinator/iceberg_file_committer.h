@@ -10,6 +10,7 @@
 #pragma once
 
 #include "base/seastarx.h"
+#include "cluster/fwd.h"
 #include "container/fragmented_vector.h"
 #include "datalake/coordinator/file_committer.h"
 #include "datalake/coordinator/state_update.h"
@@ -46,6 +47,9 @@ public:
     ss::future<checked<chunked_vector<mark_files_committed_update>, errc>>
     commit_topic_files_to_catalog(
       model::topic, const topics_state&) const final;
+
+    ss::future<checked<std::nullopt_t, errc>>
+    drop_table(const model::topic&) const final;
 
 private:
     // TODO: pull this out into some helper? Seems useful for other actions.

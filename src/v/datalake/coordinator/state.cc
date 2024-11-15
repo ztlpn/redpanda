@@ -25,4 +25,15 @@ topics_state::partition_state(const model::topic_partition& tp) const {
     return prt_iter->second;
 }
 
+std::ostream& operator<<(std::ostream& o, topic_state::lifecycle_state_t s) {
+    switch (s) {
+    case topic_state::lifecycle_state_t::live:
+        return o << "live";
+    case topic_state::lifecycle_state_t::closed:
+        return o << "closed";
+    case topic_state::lifecycle_state_t::purged:
+        return o << "purged";
+    }
+}
+
 } // namespace datalake::coordinator

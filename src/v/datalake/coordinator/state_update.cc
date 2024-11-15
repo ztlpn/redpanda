@@ -22,6 +22,8 @@ std::ostream& operator<<(std::ostream& o, const update_key& u) {
         return o << "update_key::add_files";
     case update_key::mark_files_committed:
         return o << "update_key::mark_files_committed";
+    case update_key::topic_lifecycle_update:
+        return o << "update_key::topic_lifecycle_update";
     }
 }
 
@@ -51,14 +53,27 @@ add_files_update::can_apply(const topics_state& state) {
     if (topic_it == state.topic_to_state.end()) {
         return std::nullopt;
     }
-    auto cur_topic_rev = topic_it->second.revision;
-    if (topic_revision != cur_topic_rev) {
+    auto& cur_topic = topic_it->second;
+    if (topic_revision < cur_topic.revision) {
+        return std::nullopt;
+    } else if (topic_revision > cur_topic.revision) {
+        if (
+          cur_topic.lifecycle_state != topic_state::lifecycle_state_t::purged) {
+            return stm_update_error{fmt::format(
+              "topic {} rev {} not yet purged (new topic rev {})",
+              tp.topic,
+              cur_topic.revision,
+              topic_revision)};
+        }
         return std::nullopt;
     }
 
-    auto partition_it = topic_it->second.pid_to_pending_files.find(
-      tp.partition);
-    if (partition_it == topic_it->second.pid_to_pending_files.end()) {
+    if (cur_topic.lifecycle_state != topic_state::lifecycle_state_t::live) {
+        return std::nullopt;
+    }
+
+    auto partition_it = cur_topic.pid_to_pending_files.find(tp.partition);
+    if (partition_it == cur_topic.pid_to_pending_files.end()) {
         return std::nullopt;
     }
     const auto& prt_state = partition_it->second;
@@ -104,6 +119,10 @@ add_files_update::apply(topics_state& state, model::offset applied_offset) {
         topic_state new_state;
         new_state.revision = topic_revision;
         tp_state = std::move(new_state);
+    }
+    if (tp_state.lifecycle_state != topic_state::lifecycle_state_t::live) {
+        // TODO: add to orphan container
+        return std::nullopt;
     }
     auto& partition_state = tp_state.pid_to_pending_files[pid];
     for (auto& e : entries) {
@@ -177,6 +196,42 @@ mark_files_committed_update::apply(topics_state& state) {
     }
     files_state.last_committed = new_committed;
     return std::nullopt;
+}
+
+checked<std::nullopt_t, stm_update_error>
+topic_lifecycle_update::can_apply(const topics_state& state) {
+    auto topic_it = state.topic_to_state.find(topic);
+    if (topic_it == state.topic_to_state.end()) {
+        return stm_update_error{fmt::format("topic {} not found", topic)};
+    }
+    if (topic_it->second.revision != revision) {
+        return stm_update_error{fmt::format(
+          "topic {} revision mismatch, expected {}, got {}",
+          topic,
+          revision,
+          topic_it->second.revision)};
+    }
+    return std::nullopt;
+}
+
+checked<std::nullopt_t, stm_update_error>
+topic_lifecycle_update::apply(topics_state& state) {
+    auto allowed = can_apply(state);
+    if (allowed.has_error()) {
+        return allowed.error();
+    }
+    state.topic_to_state[topic].lifecycle_state = new_state;
+    return std::nullopt;
+}
+
+std::ostream& operator<<(std::ostream& o, topic_lifecycle_update u) {
+    fmt::print(
+      o,
+      "{{topic: {}, revision: {}, new_state: {}}}",
+      u.topic,
+      u.revision,
+      u.new_state);
+    return o;
 }
 
 } // namespace datalake::coordinator

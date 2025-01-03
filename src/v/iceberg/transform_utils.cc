@@ -34,6 +34,11 @@ struct transform_applying_visitor {
         return v;
     }
 
+    value operator()(const day_transform&) {
+        int_value v{std::visit(day_transform_visitor{}, source_val_)};
+        return v;
+    }
+
     template<typename T>
     value operator()(const T&) {
         throw std::invalid_argument(

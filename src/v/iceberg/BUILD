@@ -955,6 +955,7 @@ redpanda_cc_library(
     include_prefix = "iceberg",
     deps = [
         ":values",
+        "@seastar",
     ],
 )
 

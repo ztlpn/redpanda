@@ -23,4 +23,14 @@ struct hour_transform_visitor {
     }
 };
 
+struct day_transform_visitor {
+    int32_t operator()(const primitive_value& v);
+
+    template<typename T>
+    int32_t operator()(const T& t) {
+        throw std::invalid_argument(
+          fmt::format("day_transform_visitor not implemented for value {}", t));
+    }
+};
+
 } // namespace iceberg

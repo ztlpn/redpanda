@@ -11,15 +11,26 @@
 
 #include "iceberg/values.h"
 
+#include <seastar/util/variant_utils.hh>
+
 namespace iceberg {
 
 namespace {
+
+static constexpr int64_t micros_per_s = 1'000'000;
+
 int32_t micros_to_hr(int64_t micros) {
     static constexpr int64_t s_per_hr = 3600;
-    static constexpr int64_t micros_per_s = 1000000;
     static constexpr int64_t micros_per_hr = micros_per_s * s_per_hr;
     return static_cast<int32_t>(micros / micros_per_hr);
 }
+
+int32_t micros_to_day(int64_t micros) {
+    static constexpr int64_t s_per_day = 86400;
+    static constexpr int64_t micros_per_day = micros_per_s * s_per_day;
+    return static_cast<int32_t>(micros / micros_per_day);
+}
+
 } // namespace
 
 int32_t hour_transform_visitor::operator()(const primitive_value& v) {
@@ -34,6 +45,17 @@ int32_t hour_transform_visitor::operator()(const primitive_value& v) {
     }
     throw std::invalid_argument(
       fmt::format("hourly_visitor not implemented for primitive value {}", v));
+}
+
+int32_t day_transform_visitor::operator()(const primitive_value& v) {
+    return ss::visit(
+      v,
+      [](const timestamp_value& v) { return micros_to_day(v.val); },
+      [](const timestamptz_value& v) { return micros_to_day(v.val); },
+      [](const auto& v) -> int32_t {
+          throw std::invalid_argument(fmt::format(
+            "day_transform_visitor not implemented for primitive value {}", v));
+      });
 }
 
 } // namespace iceberg

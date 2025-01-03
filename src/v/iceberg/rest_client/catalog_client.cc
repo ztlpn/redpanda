@@ -14,6 +14,7 @@
 #include "http/request_builder.h"
 #include "http/utils.h"
 #include "iceberg/json_writer.h"
+#include "iceberg/logger.h"
 #include "iceberg/rest_client/entities.h"
 #include "iceberg/rest_client/json.h"
 #include "iceberg/table_requests_json.h"
@@ -216,6 +217,13 @@ ss::future<expected<load_table_result>> catalog_client::create_table(
                           .with_bearer_auth(token.value())
                           .with_content_type(json_content_type);
 
+    auto json_buf = serialize_payload_as_json(req);
+    ss::sstring json_str;
+    for (const auto& frag : json_buf) {
+        json_str.append(frag.get(), frag.size());
+    }
+    vlog(log.info, "FFF {}", json_str);
+
     co_return (co_await perform_request(
                  rtc, http_request, serialize_payload_as_json(req)))
       .and_then(parse_json)
@@ -276,6 +284,13 @@ ss::future<expected<commit_table_response>> catalog_client::commit_table_update(
                           .update(commit_request.identifier.table)
                           .with_bearer_auth(token.value())
                           .with_content_type(json_content_type);
+
+    auto json_buf = serialize_payload_as_json(commit_request);
+    ss::sstring json_str;
+    for (const auto& frag : json_buf) {
+        json_str.append(frag.get(), frag.size());
+    }
+    vlog(log.info, "FFF COMMIT {}", json_str);
 
     co_return (co_await perform_request(
                  rtc, http_request, serialize_payload_as_json(commit_request)))

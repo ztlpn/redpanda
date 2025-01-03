@@ -10,6 +10,8 @@
 
 #include "iceberg/rest_client/retry_policy.h"
 
+#include "base/vlog.h"
+#include "iceberg/logger.h"
 #include "net/connection.h"
 
 namespace {
@@ -70,6 +72,12 @@ default_retry_policy::should_retry(http::downloaded_response response) const {
       == boost::beast::http::status_class::successful) {
         return response;
     }
+
+    ss::sstring response_str;
+    for (const auto& frag : response.body) {
+        response_str.append(frag.get(), frag.size());
+    }
+    vlog(log.info, "ERR {}: {}", status, response_str);
 
     const auto can_be_retried = std::ranges::find(retriable_statuses, status)
                                 != retriable_statuses.end();

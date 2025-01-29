@@ -100,6 +100,7 @@ TEST(table_requests, serialize_commit_table_request) {
     req.requirements.push_back(table_requirement::last_assigned_field_match{});
     req.requirements.push_back(
       table_requirement::assert_last_assigned_partition_id{});
+    req.requirements.push_back(table_requirement::assert_default_spec_id{});
 
     auto json_str = to_json_str(req);
 
@@ -120,7 +121,7 @@ TEST(table_requests, serialize_commit_table_request) {
     ASSERT_EQ(d["updates"].GetArray()[5]["action"], "set-snapshot-ref");
 
     ASSERT_TRUE(d["requirements"].IsArray());
-    ASSERT_EQ(d["requirements"].GetArray().Size(), 6);
+    ASSERT_EQ(d["requirements"].GetArray().Size(), 7);
     ASSERT_EQ(d["requirements"].GetArray()[0]["type"], "assert-create");
     ASSERT_EQ(
       d["requirements"].GetArray()[1]["type"], "assert-current-schema-id");
@@ -132,6 +133,8 @@ TEST(table_requests, serialize_commit_table_request) {
     ASSERT_EQ(
       d["requirements"].GetArray()[5]["type"],
       "assert-last-assigned-partition-id");
+    ASSERT_EQ(
+      d["requirements"].GetArray()[6]["type"], "assert-default-spec-id");
 }
 
 TEST(table_requests, parsing_load_table_result) {

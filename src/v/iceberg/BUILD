@@ -970,6 +970,7 @@ redpanda_cc_library(
     implementation_deps = [
         ":remove_snapshots_action",
         ":table_update_applier",
+        ":update_partition_spec_action",
         ":update_schema_action",
     ],
     include_prefix = "iceberg",
@@ -1053,6 +1054,26 @@ redpanda_cc_library(
         ":transform",
         "//src/v/container:fragmented_vector",
         "@seastar",
+    ],
+)
+
+redpanda_cc_library(
+    name = "update_partition_spec_action",
+    srcs = [
+        "update_partition_spec_action.cc",
+    ],
+    hdrs = [
+        "update_partition_spec_action.h",
+    ],
+    implementation_deps = [
+        ":table_requirement",
+        ":table_update",
+    ],
+    include_prefix = "iceberg",
+    deps = [
+        ":action",
+        ":table_metadata",
+        ":unresolved_partition_spec",
     ],
 )
 

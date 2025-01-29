@@ -90,6 +90,7 @@ TEST(table_requests, serialize_commit_table_request) {
     req.updates.push_back(table_update::add_schema{});
     req.updates.push_back(table_update::set_current_schema{});
     req.updates.push_back(table_update::add_spec{});
+    req.updates.push_back(table_update::set_default_spec{});
     req.updates.push_back(table_update::add_snapshot{});
     req.updates.push_back(table_update::remove_snapshots{});
     req.updates.push_back(table_update::set_snapshot_ref{});
@@ -112,13 +113,14 @@ TEST(table_requests, serialize_commit_table_request) {
     ASSERT_EQ(d["identifier"]["name"].GetString(), req.identifier.table);
 
     ASSERT_TRUE(d["updates"].IsArray());
-    ASSERT_EQ(d["updates"].GetArray().Size(), 6);
+    ASSERT_EQ(d["updates"].GetArray().Size(), 7);
     ASSERT_EQ(d["updates"].GetArray()[0]["action"], "add-schema");
     ASSERT_EQ(d["updates"].GetArray()[1]["action"], "set-current-schema");
     ASSERT_EQ(d["updates"].GetArray()[2]["action"], "add-spec");
-    ASSERT_EQ(d["updates"].GetArray()[3]["action"], "add-snapshot");
-    ASSERT_EQ(d["updates"].GetArray()[4]["action"], "remove-snapshots");
-    ASSERT_EQ(d["updates"].GetArray()[5]["action"], "set-snapshot-ref");
+    ASSERT_EQ(d["updates"].GetArray()[3]["action"], "set-default-spec");
+    ASSERT_EQ(d["updates"].GetArray()[4]["action"], "add-snapshot");
+    ASSERT_EQ(d["updates"].GetArray()[5]["action"], "remove-snapshots");
+    ASSERT_EQ(d["updates"].GetArray()[6]["action"], "set-snapshot-ref");
 
     ASSERT_TRUE(d["requirements"].IsArray());
     ASSERT_EQ(d["requirements"].GetArray().Size(), 7);

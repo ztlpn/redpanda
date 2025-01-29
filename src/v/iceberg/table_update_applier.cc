@@ -80,6 +80,31 @@ struct update_applying_visitor {
         meta.partition_specs.emplace_back(update.spec.copy());
         return outcome::success;
     }
+    outcome operator()(const set_default_spec& update) {
+        auto sid = update.spec_id;
+        if (sid() == partition_spec::unassigned_id) {
+            // -1 indicates that we should set the spec to the latest added one.
+            if (meta.schemas.empty()) {
+                vlog(
+                  log.error, "Can't set -1 when there are no partition specs");
+                return outcome::unexpected_state;
+            }
+            auto max_id = meta.partition_specs.front().spec_id;
+            for (const auto& s : meta.partition_specs) {
+                max_id = std::max(max_id, s.spec_id);
+            }
+            meta.default_spec_id = max_id;
+            return outcome::success;
+        }
+        auto spec = std::ranges::find(
+          meta.partition_specs, sid, &partition_spec::spec_id);
+        if (spec == meta.partition_specs.end()) {
+            vlog(log.error, "Partition spec {} doesn't exist", sid);
+            return outcome::unexpected_state;
+        }
+        meta.default_spec_id = update.spec_id;
+        return outcome::success;
+    }
     outcome operator()(const add_snapshot& update) {
         auto sid = update.snapshot.id;
         if (!meta.snapshots.has_value()) {

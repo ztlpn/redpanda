@@ -172,15 +172,16 @@ ss::future<action::action_outcome> merge_append_action::build_updates() && {
           table_.default_spec_id);
         co_return action::errc::unexpected_state;
     }
-    if (pspecs.size() != 1) {
-        // TODO: when we support multiple partition specs, we'll need to group
-        // them by spec id and write manifest files per spec.
-        vlog(
-          log.error,
-          "Currently exactly one partition spec is supported: {} found",
-          pspecs.size());
-        co_return action::errc::unexpected_state;
-    }
+    // if (pspecs.size() != 1) {
+    //     // TODO: when we support multiple partition specs, we'll need to
+    //     group
+    //     // them by spec id and write manifest files per spec.
+    //     vlog(
+    //       log.error,
+    //       "Currently exactly one partition spec is supported: {} found",
+    //       pspecs.size());
+    //     co_return action::errc::unexpected_state;
+    // }
 
     // Validate our input files that their partition keys look sane.
     const auto& pspec = *pspec_it;

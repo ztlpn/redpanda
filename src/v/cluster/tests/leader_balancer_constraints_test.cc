@@ -418,3 +418,59 @@ BOOST_AUTO_TEST_CASE(even_shard_uneven_node_load) {
     BOOST_CHECK_EQUAL(node_stats[model::node_id{1}], n_partitions / 2);
     BOOST_CHECK_EQUAL(node_stats[model::node_id{2}], n_partitions);
 }
+
+BOOST_AUTO_TEST_CASE(ololo) {
+    index_type idx;
+    cluster::leader_balancer_types::group_id_to_topic_id g2topic;
+    using cluster::leader_balancer_types::topic_id_t;
+
+    int n_nodes = 21;
+    uint32_t n_shards = 62;
+
+    for (int n = 0; n < n_nodes; ++n) {
+        for (uint32_t s = 0; s < n_shards; ++s) {
+            idx[model::broker_shard{model::node_id(n), s}];
+        }
+    }
+
+    // PLACE THE OUTPUT OF lb_simulate.py HERE
+
+    cluster::leader_balancer_types::shard_index shard_idx(std::move(idx));
+
+    auto strategy = lbt::random_hill_climbing_strategy(
+      leader_balancer_test_utils::copy_cluster_index(shard_idx.shards()),
+      std::move(g2topic),
+      cluster::leader_balancer_types::muted_index({}, {}),
+      std::nullopt);
+
+    size_t n_steps = 0;
+    while (auto movement_opt = strategy.find_movement({})) {
+        ++n_steps;
+        strategy.apply_movement(*movement_opt);
+        shard_idx.update_index(*movement_opt);
+    }
+
+    std::map<model::broker_shard, size_t> counts;
+    for (int n = 0; n < n_nodes; ++n) {
+        for (uint32_t s = 0; s < n_shards; ++s) {
+            counts[model::broker_shard{model::node_id(n), s}];
+        }
+    }
+
+    for (const auto& [bs, leaders]: shard_idx.shards()) {
+        for (const auto& [group, replicas]: leaders) {
+          if (group() >= 1297 && group() <= 2320) {
+            counts[bs] += 1;
+          }
+        }
+    }
+
+    size_t hot_count = 0;
+    for (const auto& [shard, leaders] : counts) {
+        if (leaders >= 2) {
+            hot_count += 1;
+            fmt::print("AAA {}: {}\n", shard, leaders);
+        }
+    }
+    fmt::print("STEPS {}, hc: {}\n", n_steps, hot_count);
+}

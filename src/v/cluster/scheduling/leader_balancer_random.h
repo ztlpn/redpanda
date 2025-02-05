@@ -157,13 +157,27 @@ public:
                 }
             }
 
-            auto shard_load_diff = _etdc.evaluate(reassignment)
-                                   + _eslc.evaluate(reassignment);
-            if (shard_load_diff < -error_jitter) {
+            auto etdc_diff = _etdc.evaluate(reassignment);
+            if (etdc_diff < -error_jitter) {
                 continue;
-            } else if (shard_load_diff > error_jitter) {
+            } else if (etdc_diff > error_jitter) {
                 return reassignment_opt;
             }
+
+            auto eslc_diff = _eslc.evaluate(reassignment);
+            if (eslc_diff < -error_jitter) {
+                continue;
+            } else if (eslc_diff > error_jitter) {
+                return reassignment_opt;
+            }
+
+            // auto shard_load_diff = _etdc.evaluate(reassignment)
+            //                        + _eslc.evaluate(reassignment);
+            // if (shard_load_diff < -error_jitter) {
+            //     continue;
+            // } else if (shard_load_diff > error_jitter) {
+            //     return reassignment_opt;
+            // }
 
             auto node_load_diff = _enlc.evaluate(reassignment);
             if (node_load_diff < -error_jitter) {

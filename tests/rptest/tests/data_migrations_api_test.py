@@ -26,7 +26,10 @@ from ducktape.utils.util import wait_until
 from rptest.services.cluster import cluster
 from rptest.services.redpanda import RedpandaService, RedpandaServiceBase, SISettings, make_redpanda_service
 from rptest.services.kgo_verifier_services import KgoVerifierConsumerGroupConsumer, KgoVerifierProducer
-from rptest.services.redpanda import SISettings
+from rptest.services.redpanda import SISettings, LoggingConfig
+from rptest.services.openmessaging_benchmark import OpenMessagingBenchmark
+from rptest.services.openmessaging_benchmark_configs import \
+    OMBSampleConfigurations
 from rptest.tests.redpanda_test import RedpandaTest
 from rptest.clients.types import TopicSpec
 from rptest.tests.e2e_finjector import Finjector
@@ -1280,3 +1283,124 @@ class DataMigrationsMultiClusterTest(RedpandaTest, DataMigrationTestMixin):
         self.consume(workload_topic.name,
                      redpanda=another_redpanda,
                      msg_count=total_acked)
+
+
+class DataMigrationsMultiClusterScaleTest(RedpandaTest,
+                                          DataMigrationTestMixin):
+    def __init__(self, test_context: TestContext, *args, **kwargs):
+        kwargs['si_settings'] = SISettings(test_context=test_context)
+        RedpandaTest.__init__(self,
+                              test_context=test_context,
+                              num_brokers=6,
+                              log_config=LoggingConfig(
+                                  'info', logger_levels={'data-migrate': 'trace'}),
+                              *args,
+                              **kwargs)
+        self.extra_clusters = []
+
+    def start_omb(self):
+        producer_rate_mbps = 200
+
+        workload = {
+            "name": "CommonWorkload",
+            "topics": 0,
+            "partitions_per_topic": 1000,
+            "existing_topic_list": ["foo", "bar"],
+            "subscriptions_per_topic": 1,
+            "consumer_per_subscription": 25,
+            "producers_per_topic": 5,
+            "producer_rate": producer_rate_mbps * 1024,
+            "message_size": 1024,
+            "payload_file": "payload/payload-1Kb.data",
+            "key_distributor": "NO_KEY",
+            "consumer_backlog_size_GB": 0,
+            "test_duration_minutes": 7,
+            "warmup_duration_minutes": 1,
+        }
+        driver = {
+            "name": "CommonWorkloadDriver",
+            # "replication_factor": 3,
+            # "request_timeout": 300000,
+            # "topic_config": {
+            #     "cleanup.policy": "compact,delete",
+            # },
+            # "producer_config": {
+            #     "enable.idempotence": "true",
+            #     "acks": "all",
+            #     # producer settings to ensure batches of decent size
+            #     # (otherwise most of the batches contain just 1 message
+            #     # which leads to unreasonably high reactor util)
+            #     "max.request.size": 5 * 2**20,
+            #     "linger.ms": 500,
+            #     "max.in.flight.requests.per.connection": 1,
+            # },
+            # "consumer_config": {
+            #     "auto.offset.reset": "earliest",
+            #     "enable.auto.commit": "false",
+            #     "max.partition.fetch.bytes": 131072
+            # },
+        }
+        validator = {
+            OMBSampleConfigurations.AVG_THROUGHPUT_MBPS:
+            [OMBSampleConfigurations.gte(producer_rate_mbps)]
+        }
+
+        self._benchmark = OpenMessagingBenchmark(ctx=self.test_context,
+                                                 redpanda=self.redpanda,
+                                                 workload=(workload,
+                                                           validator),
+                                                 topology="ensemble")
+        self._benchmark.start()
+        self.logger.warn(f"OMB started")
+
+    def finish_omb(self):
+        benchmark_time_min = self._benchmark.benchmark_time_mins() + 2
+        self._benchmark.wait(timeout_sec=benchmark_time_min * 60)
+        # self._benchmark.stop()
+        self._benchmark.check_succeed()
+
+    # def omb_topics(self):
+    #     rpk = RpkTool(self.redpanda)
+    #     return [t for t in rpk.list_topics() if t.startswith('test-topic-')]
+
+    def start_extra_cluster(self, num_brokers):
+        si_settings = SISettings(self.test_context,
+                                 bypass_bucket_creation=True)
+        si_settings.reset_cloud_storage_bucket(
+            self.si_settings.cloud_storage_bucket)
+
+        cluster = make_redpanda_service(
+            self.test_context,
+            num_brokers=num_brokers,
+            si_settings=si_settings,
+        )
+        self.extra_clusters.append(cluster)
+
+        cluster.start()
+        return cluster
+
+    @cluster(num_nodes=15)
+    def test_topic_migration(self):
+        n_partitions = 1000
+        workload_topic = TopicSpec(name="foo", partition_count=n_partitions)
+        workload_ns_topic = make_namespaced_topic(workload_topic.name)
+
+        dest_redpanda = self.start_extra_cluster(num_brokers=6)
+
+        self.client().create_topic(workload_topic)
+        self.logger.warn(f"created topic {workload_topic}")
+
+        other_topic = TopicSpec(name="bar", partition_count=n_partitions)
+        self.client().create_topic(other_topic)
+        self.logger.warn(f"created topic {other_topic}")
+
+        self.start_omb()
+
+        time.sleep(5 * 60)
+
+        self.logger.warn(f"start migration")
+        self.migrate_between_clusters([workload_ns_topic], self.redpanda,
+                                      dest_redpanda)
+
+        time.sleep(10)
+        self.finish_omb()

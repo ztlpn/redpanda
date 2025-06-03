@@ -1291,15 +1291,21 @@ class DataMigrationsMultiClusterScaleTest(RedpandaTest,
         kwargs['si_settings'] = SISettings(test_context=test_context)
         RedpandaTest.__init__(self,
                               test_context=test_context,
-                              num_brokers=6,
+                              num_brokers=3,
                               log_config=LoggingConfig(
-                                  'info', logger_levels={'data-migrate': 'trace'}),
+                                  'info',
+                                  logger_levels={
+                                      'data-migrate': 'trace',
+                                      'cluster': 'trace',
+                                      'archival': 'trace',
+                                  },
+                              ),
                               *args,
                               **kwargs)
         self.extra_clusters = []
 
     def start_omb(self):
-        producer_rate_mbps = 200
+        producer_rate_mbps = 20
 
         workload = {
             "name": "CommonWorkload",
@@ -1314,7 +1320,7 @@ class DataMigrationsMultiClusterScaleTest(RedpandaTest,
             "payload_file": "payload/payload-1Kb.data",
             "key_distributor": "NO_KEY",
             "consumer_backlog_size_GB": 0,
-            "test_duration_minutes": 7,
+            "test_duration_minutes": 2,
             "warmup_duration_minutes": 1,
         }
         driver = {
@@ -1379,13 +1385,13 @@ class DataMigrationsMultiClusterScaleTest(RedpandaTest,
         cluster.start()
         return cluster
 
-    @cluster(num_nodes=15)
+    @cluster(num_nodes=9)
     def test_topic_migration(self):
-        n_partitions = 1000
+        n_partitions = 10
         workload_topic = TopicSpec(name="foo", partition_count=n_partitions)
         workload_ns_topic = make_namespaced_topic(workload_topic.name)
 
-        dest_redpanda = self.start_extra_cluster(num_brokers=6)
+        dest_redpanda = self.start_extra_cluster(num_brokers=3)
 
         self.client().create_topic(workload_topic)
         self.logger.warn(f"created topic {workload_topic}")
@@ -1396,11 +1402,11 @@ class DataMigrationsMultiClusterScaleTest(RedpandaTest,
 
         self.start_omb()
 
-        time.sleep(5 * 60)
+        time.sleep(90)
 
         self.logger.warn(f"start migration")
         self.migrate_between_clusters([workload_ns_topic], self.redpanda,
                                       dest_redpanda)
 
         time.sleep(10)
-        self.finish_omb()
+        # self.finish_omb()

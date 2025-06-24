@@ -308,6 +308,11 @@ private:
         if (ec) {
             co_return ec;
         }
+        vlog(
+          _logger.trace,
+          "[{}] placement state: {}",
+          ntp,
+          _shard_placement.state_on_this_shard(ntp));
 
         _launched.insert(ntp);
         vlog(
@@ -591,11 +596,11 @@ private:
           });
 
         co_await ss::sleep(1ms * random_generators::get_int(30));
-        if (random_generators::get_int(5) == 0) {
-            // simulate partial failure of the transfer.
-            throw std::runtime_error{
-              fmt_with_ctx(fmt::format, "[{}] transfer failed!", ntp)};
-        }
+        // if (random_generators::get_int(5) == 0) {
+        //     // simulate partial failure of the transfer.
+        //     throw std::runtime_error{
+        //       fmt_with_ctx(fmt::format, "[{}] transfer failed!", ntp)};
+        // }
 
         co_await _ntp2shards.invoke_on(
           0, [ntp, log_revision, destination](ntp2shards_t& ntp2shards) {
@@ -624,6 +629,16 @@ private:
             }
         };
 
+        vlog(
+          _logger.info,
+          "SLEEP BEGIN {}",
+          _shard_placement.state_on_this_shard(ntp).value());
+        co_await ss::sleep(1000ms);
+        vlog(
+          _logger.info,
+          "SLEEP END {}",
+          _shard_placement.state_on_this_shard(ntp).value());
+
         co_await _shard_placement.finish_transfer(
           ntp, log_revision, _shard_placement.container(), shard_callback);
         vlog(_logger.trace, "[{}] transferred", ntp);
@@ -644,9 +659,9 @@ private:
 
 // Limit concurrency to 4 so that there are more interesting repeats in randomly
 // generated shard ids.
-ss::shard_id get_max_shard_id() {
-    return std::min(ss::smp::count - 1, ss::shard_id(3));
-}
+// ss::shard_id get_max_shard_id() {
+//     return std::min(ss::smp::count - 1, ss::shard_id(3));
+// }
 
 /// Simplified version of shard_balancer that just assigns ntps to random
 /// shards. Runs on shard 0.
@@ -728,12 +743,14 @@ private:
     }
 
     ss::future<> assign_ntp(const model::ntp& ntp, mutex::units& /*lock*/) {
+        static int cur_shard = 0;
+
         std::optional<shard_placement_target> target;
         if (auto it = _ntpt.ntp2meta.find(ntp); it != _ntpt.ntp2meta.end()) {
+            int next_shard = (cur_shard == 1 ? 2 : 1);
             target = shard_placement_target(
-              it->second.group,
-              it->second.log_revision,
-              random_generators::get_int(get_max_shard_id()));
+              it->second.group, it->second.log_revision, next_shard);
+            cur_shard = next_shard;
         }
 
         try {
@@ -1212,6 +1229,58 @@ TEST_F_CORO(shard_placement_test_fixture, StressTest) {
     }
 
     vlog(logger.info, "finished");
+}
+
+TEST_F_CORO(shard_placement_test_fixture, MyTest) {
+    prefix_logger logger(clusterlog, "TEST");
+    co_await start();
+
+    _shard_assigner->enable_persistence_eventually();
+
+    model::ntp ntp(model::kafka_namespace, "test_topic", 0);
+    model::revision_id revision{123};
+    raft::group_id group{1};
+
+    vlog(
+      logger.info,
+      "[{}] OP: add, group: {}, log revision: {}",
+      ntp,
+      group,
+      revision);
+
+    co_await ntpt.invoke_on_all([&](ntp_table& ntpt) {
+        ntpt.ntp2meta[ntp] = ntp_table::ntp_meta{
+          .group = group,
+          .log_revision = revision,
+        };
+        ntpt.revision = revision;
+        if (ss::this_shard_id() == 0) {
+            _shard_assigner->assign_eventually(ntp);
+        }
+    });
+
+    for (size_t i = 0;; ++i) {
+        ASSERT_TRUE_CORO(i < 50) << "taking too long to reconcile";
+        if (!(_shard_assigner->is_reconciled()
+              && co_await rb->local().is_reconciled())) {
+            co_await ss::sleep(100ms);
+        } else {
+            break;
+        }
+    }
+    vlog(logger.info, "=================================== FFF1");
+
+    co_await _shard_assigner->assign(ntp);
+    vlog(logger.info, "=================================== FFF2");
+
+    co_await ss::sleep(500ms);
+    vlog(logger.info, "=================================== FFF3");
+
+    co_await _shard_assigner->assign(ntp);
+    vlog(logger.info, "=================================== FFF4");
+
+    co_await ss::sleep(2000ms);
+    vlog(logger.info, "=================================== FFF5");
 }
 
 } // namespace cluster
